@@ -14,7 +14,6 @@ opt-level = 1
 bevy = { version = "0.10.1" }
 bevy-inspector-egui = "0.18.3"
 bevy_egui = "0.20.3"
-bevy_reflect = "0.10.1"
 image = "0.24.6"
 itertools = "0.10.5"
 nokhwa = { version = "0.10.4", features = ["input-native"] }
