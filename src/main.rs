@@ -41,7 +41,7 @@ struct Velocity(Vec2);
 struct ImageGradient(Vec2);
 
 #[derive(Component, Clone, Copy, Default)]
-struct CrowdGradient(Vec2);
+struct RepelGradient(Vec2);
 
 #[derive(Default, Resource, Bundle, Clone)]
 struct CircleBundle {
@@ -49,7 +49,7 @@ struct CircleBundle {
   mesh: MaterialMesh2dBundle<ColorMaterial>,
   velocity: Velocity,
   image_grad: ImageGradient,
-  crowd_grad: CrowdGradient,
+  repel_gradient: RepelGradient,
 }
 
 #[derive(Default, Resource, Clone, Reflect)]
@@ -315,8 +315,8 @@ fn inspect_buffer(
 impl StaticParam {
   fn new(width: f32, height: f32) -> Self {
     let viewport_size = (width, height);
-    let circle_grid = (10, 10);
-    let circle_radius = 10.0;
+    let circle_grid = (100, 100);
+    let circle_radius = 1.0;
 
     Self {
       size: viewport_size,
@@ -368,7 +368,7 @@ impl StaticParam {
   fn translation_to_pixel(&self, translation: &Vec3) -> [u32; 2] {
     let [x0, x1, y0, y1] = self.boundary();
     let x = (translation.x - x0) / (x1 - x0) * (self.width() as f32);
-    let y = (translation.y - y0) / (y1 - y0) * (self.height() as f32);
+    let y = (1.0 - (translation.y - y0) / (y1 - y0)) * (self.height() as f32);
     [x as u32, y as u32]
   }
 }
