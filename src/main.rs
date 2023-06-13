@@ -92,7 +92,12 @@ fn main() {
     .add_system(update_camera_output)
     .add_system(update_luma_buffer.after(update_camera_output))
     .add_system(update_image_gradient.after(update_luma_buffer))
-    .add_system(update_velocity.after(update_image_gradient))
+    .add_system(update_repel_gradient)
+    .add_system(
+      update_velocity
+        .after(update_image_gradient)
+        .after(update_repel_gradient),
+    )
     .add_system(inspect_buffer)
     .add_system(physics_velocity_system)
     .run();
@@ -262,9 +267,51 @@ fn update_image_gradient(
   }
 }
 
-fn update_velocity(mut q: Query<(&mut Velocity, &ImageGradient)>) {
-  for (mut vel, grad) in q.iter_mut() {
-    vel.0 = grad.0;
+fn update_repel_gradient(
+  all_trans: Query<&Transform>,
+  mut q: Query<(Entity, &Transform, &mut RepelGradient)>,
+  all_circles: Res<TrackedCircles>,
+) {
+  const RADIUS: f32 = 50.0;
+  for (curr_circ, trans, mut grad) in q.iter_mut() {
+    let mut new_grad = Vec2::ZERO;
+    let trans = trans.translation;
+
+    for e in &all_circles.circles {
+      if e == &curr_circ {
+        continue;
+      }
+
+      if let Ok(neigh_trans) = all_trans.get(*e) {
+        let neigh_trans = neigh_trans.translation;
+        if (trans.x - neigh_trans.x).abs() > RADIUS
+          || (trans.y - neigh_trans.y).abs() > RADIUS
+        {
+          continue;
+        }
+        let dist_sq = trans.distance_squared(neigh_trans).max(0.1);
+        if dist_sq > RADIUS {
+          continue;
+        }
+
+        let force_x = 100.0 / (trans.x - neigh_trans.y);
+        let force_y = 100.0 / (trans.y - neigh_trans.y);
+        // dbg!(force_x, force_y, neigh_trans.x - trans.x);
+
+        new_grad.x += force_x.clamp(-100.0, 100.0);
+        new_grad.y += force_y.clamp(-100.0, 100.0);
+      }
+    }
+
+    grad.0 = new_grad;
+  }
+}
+
+fn update_velocity(
+  mut q: Query<(&mut Velocity, &ImageGradient, &RepelGradient)>,
+) {
+  for (mut vel, grad, grad2) in q.iter_mut() {
+    vel.0 = grad.0 + grad2.0;
   }
 }
 
@@ -315,7 +362,7 @@ fn inspect_buffer(
 impl StaticParam {
   fn new(width: f32, height: f32) -> Self {
     let viewport_size = (width, height);
-    let circle_grid = (100, 100);
+    let circle_grid = (30, 30);
     let circle_radius = 1.0;
 
     Self {
@@ -367,8 +414,8 @@ impl StaticParam {
 
   fn translation_to_pixel(&self, translation: &Vec3) -> [u32; 2] {
     let [x0, x1, y0, y1] = self.boundary();
-    let x = (translation.x - x0) / (x1 - x0) * (self.width() as f32);
-    let y = (1.0 - (translation.y - y0) / (y1 - y0)) * (self.height() as f32);
+    let x = (translation.x - x0) / (x1 - x0) * self.width();
+    let y = (1.0 - (translation.y - y0) / (y1 - y0)) * self.height();
     [x as u32, y as u32]
   }
 }
