@@ -4,7 +4,7 @@ use bevy::{
   prelude::{
     default, shape, App, Assets, Bundle, Camera2dBundle, Color, Commands,
     Component, DefaultPlugins, Entity, Handle, Image, In, IntoPipeSystem,
-    IntoSystemConfig, Mesh, NonSendMut, PluginGroup, Query, Rect, Reflect,
+    IntoSystemConfig, Mesh, NonSendMut, PluginGroup, Query, Reflect,
     ReflectResource, Res, ResMut, Resource, Transform, Vec2, Vec3, World,
   },
   render::render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -13,7 +13,10 @@ use bevy::{
   window::{Window, WindowPlugin},
 };
 use bevy_egui::{EguiContexts, EguiPlugin};
-use image::{codecs::jpeg::JpegDecoder, ImageDecoder};
+use image::{
+  codecs::jpeg::JpegDecoder, GenericImageView, GrayImage, ImageBuffer,
+  ImageDecoder, Luma,
+};
 use itertools::Itertools;
 use nokhwa::{pixel_format::LumaFormat, Camera};
 
@@ -28,21 +31,28 @@ struct CameraBuffer {
   height: u32,
 }
 
+#[derive(Resource, Clone, Default)]
+struct LumaGrid(GrayImage);
+
 #[derive(Component, Clone, Copy, Default)]
 struct Velocity(Vec2);
 
 #[derive(Component, Clone, Copy, Default)]
-struct Force(Vec2);
+struct ImageGradient(Vec2);
+
+#[derive(Component, Clone, Copy, Default)]
+struct CrowdGradient(Vec2);
 
 #[derive(Default, Resource, Bundle, Clone)]
 struct CircleBundle {
   #[bundle]
   mesh: MaterialMesh2dBundle<ColorMaterial>,
-  force: Force,
   velocity: Velocity,
+  image_grad: ImageGradient,
+  crowd_grad: CrowdGradient,
 }
 
-#[derive(Default, Resource, Clone)]
+#[derive(Default, Resource, Clone, Reflect)]
 struct Grid<T> {
   size: (usize, usize),
   value: Vec<T>,
@@ -54,15 +64,14 @@ struct TrackedCircles {
 }
 
 #[derive(Resource)]
-struct DimensionInfo {
-  pub viewport_size: (f32, f32),
+struct StaticParam {
+  pub size: (f32, f32),
   pub circle_grid: (usize, usize),
   pub circle_radius: f32,
-  pub boundary: Rect,
 }
 
 fn main() {
-  let dim = DimensionInfo::new(500.0, 500.0);
+  let dim = StaticParam::new(500.0, 500.0);
   let plugins = DefaultPlugins.set(WindowPlugin {
     primary_window: Some(Window {
       title: "Dotcam".into(),
@@ -81,9 +90,11 @@ fn main() {
     .add_startup_system(setup_camera)
     .add_startup_system(setup_circle_bundle.pipe(spawn_circles))
     .add_system(update_camera_output)
+    .add_system(update_luma_buffer.after(update_camera_output))
+    .add_system(update_image_gradient.after(update_luma_buffer))
+    .add_system(update_velocity.after(update_image_gradient))
     .add_system(inspect_buffer)
-    .add_system(physics_force_system)
-    .add_system(physics_velocity_system.after(physics_force_system))
+    .add_system(physics_velocity_system)
     .run();
 }
 
@@ -111,14 +122,17 @@ fn setup_webcam(world: &mut World) {
   let image = Image::new_fill(extent, dimension, &[100, 0, 0, 255], format);
 
   let mut images = world.get_resource_mut::<Assets<Image>>().unwrap();
-
   let image = images.add(image);
+
+  let param = world.resource::<StaticParam>();
+  let luma_grid = ImageBuffer::new(param.size.0 as u32, param.size.1 as u32);
 
   world.insert_resource(CameraBuffer {
     image,
     width,
     height,
   });
+  world.insert_resource(LumaGrid(luma_grid));
 }
 
 fn setup_camera(mut commands: Commands) {
@@ -161,16 +175,45 @@ fn update_camera_output(
     });
 }
 
+fn update_luma_buffer(
+  buffer: Option<Res<CameraBuffer>>,
+  images: Res<Assets<Image>>,
+  params: Res<StaticParam>,
+  mut luma_grid: ResMut<LumaGrid>,
+) {
+  let image = match buffer {
+    Some(buffer) => images.get(&buffer.image).unwrap(),
+    None => return,
+  };
+
+  let image = image.clone().try_into_dynamic().unwrap();
+  let dim = image.height().min(image.width());
+  let image = image
+    .crop_imm(
+      (image.width() - dim) / 2,
+      (image.height() - dim) / 2,
+      dim,
+      dim,
+    )
+    .resize_exact(
+      params.width() as u32,
+      params.height() as u32,
+      image::imageops::FilterType::Nearest,
+    );
+
+  luma_grid.0 = image.into_luma8();
+}
+
 fn setup_circle_bundle(
   mut commands: Commands,
   mut meshes: ResMut<Assets<Mesh>>,
   mut materials: ResMut<Assets<ColorMaterial>>,
-  dimension_info: Res<DimensionInfo>,
+  dimension_info: Res<StaticParam>,
 ) -> CircleBundle {
   let mesh_handle = meshes
     .add(Mesh::from(shape::Circle {
       radius: dimension_info.circle_radius,
-      ..Default::default()
+      ..default()
     }))
     .into();
 
@@ -182,7 +225,7 @@ fn setup_circle_bundle(
       ..default()
     },
     velocity: Velocity(Vec2::new(0.0, 0.0)),
-    force: Force(Vec2::new(0.0, 0.0)),
+    ..default()
   };
 
   commands.insert_resource(bundle.clone());
@@ -191,52 +234,54 @@ fn setup_circle_bundle(
 
 fn spawn_circles(
   In(circle_bundle): In<CircleBundle>,
-  dimension_info: Res<DimensionInfo>,
+  dimension_info: Res<StaticParam>,
   mut tracked_circles: ResMut<TrackedCircles>,
   mut commands: Commands,
 ) {
-  // random force an each circle
-  let mut rng = rand::thread_rng();
-
   for pos in dimension_info.circle_positions() {
     let entity = commands
       .spawn(circle_bundle.clone())
       .insert(Transform::from_translation(pos.extend(0.0)))
-      .insert(Force(Vec2::new(
-        rng.gen_range(-5.0..5.0),
-        rng.gen_range(-5.0..5.0),
-      )))
       .id();
 
     tracked_circles.circles.push(entity);
   }
 }
 
-fn physics_force_system(
-  time: Res<Time>,
-  mut query: Query<(&mut Force, &mut Velocity)>,
+fn update_image_gradient(
+  mut q: Query<(&Transform, &mut ImageGradient)>,
+  luma_grid: Res<LumaGrid>,
+  param: Res<StaticParam>,
 ) {
-  let dt = time.delta_seconds();
+  let luma_grid = &luma_grid.0;
+  for (trans, mut grad) in q.iter_mut() {
+    let [x, y] = param.translation_to_pixel(&trans.translation);
+    let new_grad = find_gradient(luma_grid, x, y);
 
-  for (force, mut velocity) in query.iter_mut() {
-    velocity.0 += force.0 * dt;
+    *grad = ImageGradient(new_grad);
+  }
+}
+
+fn update_velocity(mut q: Query<(&mut Velocity, &ImageGradient)>) {
+  for (mut vel, grad) in q.iter_mut() {
+    vel.0 = grad.0;
   }
 }
 
 fn physics_velocity_system(
   time: Res<Time>,
-  dimension_info: Res<DimensionInfo>,
+  dimension_info: Res<StaticParam>,
   mut query: Query<(&mut Transform, &mut Velocity)>,
 ) {
   let dt = time.delta_seconds();
   let [x_min, x_max, y_min, y_max] = dimension_info.boundary();
 
   for (mut transform, velocity) in query.iter_mut() {
-    transform.translation += Vec3::new(velocity.0.x, velocity.0.y, 0.0) * dt;
-    transform.translation.x =
-      wrap_around(transform.translation.x, x_min, x_max);
-    transform.translation.y =
-      wrap_around(transform.translation.y, y_min, y_max);
+    let mut new_translation =
+      transform.translation + Vec3::new(velocity.0.x, velocity.0.y, 0.0) * dt;
+    new_translation.x = wrap_around(new_translation.x, x_min, x_max);
+    new_translation.y = wrap_around(new_translation.y, y_min, y_max);
+    transform.translation = new_translation;
   }
 }
 
@@ -267,31 +312,34 @@ fn inspect_buffer(
   );
 }
 
-impl DimensionInfo {
+impl StaticParam {
   fn new(width: f32, height: f32) -> Self {
     let viewport_size = (width, height);
     let circle_grid = (10, 10);
     let circle_radius = 10.0;
-    let boundary =
-      Rect::new(-(width / 2.0), -(height / 2.0), width / 2.0, height / 2.0);
 
     Self {
-      viewport_size,
+      size: viewport_size,
       circle_grid,
       circle_radius,
-      boundary,
     }
   }
 
+  fn width(&self) -> f32 {
+    self.size.0
+  }
+  fn height(&self) -> f32 {
+    self.size.1
+  }
+
   fn resolution(&self) -> bevy::window::WindowResolution {
-    let (w, h) = self.viewport_size;
+    let (w, h) = self.size;
     bevy::window::WindowResolution::new(w, h)
   }
 
   fn circle_positions(&self) -> impl Iterator<Item = Vec2> {
     let (grid_w, grid_h) = self.circle_grid;
-    let Vec2 { x: x0, y: y0 } = self.boundary.min;
-    let Vec2 { x: x1, y: y1 } = self.boundary.max;
+    let [x0, x1, y0, y1] = self.boundary();
 
     let x_step = (x1 - x0) / (grid_w as f32);
     let y_step = (y1 - y0) / (grid_h as f32);
@@ -309,17 +357,51 @@ impl DimensionInfo {
   }
 
   fn boundary(&self) -> [f32; 4] {
-    let Rect { min, max } = self.boundary;
-    [min.x, min.y, max.x, max.y]
+    let x0 = self.size.0 / -2.0;
+    let x1 = self.size.0 / 2.0;
+    let y0 = self.size.1 / -2.0;
+    let y1 = self.size.1 / 2.0;
+
+    [x0, x1, y0, y1]
+  }
+
+  fn translation_to_pixel(&self, translation: &Vec3) -> [u32; 2] {
+    let [x0, x1, y0, y1] = self.boundary();
+    let x = (translation.x - x0) / (x1 - x0) * (self.width() as f32);
+    let y = (translation.y - y0) / (y1 - y0) * (self.height() as f32);
+    [x as u32, y as u32]
   }
 }
 
-fn wrap_around(v: f32, min: f32, max: f32) -> f32 {
-  if v < min {
-    max - (min - v)
-  } else if v > max {
-    min + (v - max)
-  } else {
-    v
+fn wrap_around(mut v: f32, min: f32, max: f32) -> f32 {
+  if v > min && v < max {
+    return v;
   }
+
+  let range = max - min;
+  while v < min {
+    v += range;
+  }
+  while v > max {
+    v -= range;
+  }
+  v
+}
+
+fn find_gradient(
+  luma_grid: &impl GenericImageView<Pixel = Luma<u8>>,
+  x: u32,
+  y: u32,
+) -> Vec2 {
+  let mut grad = Vec2::ZERO;
+  let x = x.max(1).min(luma_grid.width() - 2);
+  let y = y.max(1).min(luma_grid.height() - 2);
+
+  let get_pixel =
+    |x: u32, y: u32| -> f32 { luma_grid.get_pixel(x, y).0[0] as f32 };
+
+  grad.x = get_pixel(x + 1, y) - get_pixel(x - 1, y);
+  grad.y = get_pixel(x, y + 1) - get_pixel(x, y - 1);
+
+  grad * 2.0
 }
