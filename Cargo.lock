@@ -1632,6 +1632,7 @@ dependencies = [
  "convolve2d",
  "image 0.24.6",
  "itertools",
+ "keyde",
  "nokhwa",
  "rand",
 ]
@@ -2441,6 +2442,12 @@ checksum = "2f37a4a5928311ac501dee68b3c7613a1037d0edb30c8e5427bd832d55d1b790"
 dependencies = [
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "keyde"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "492e9e7a4356983780921a99aba306d75953f84670d2320bb3488a4e69639d43"
 
 [[package]]
 name = "khronos-egl"

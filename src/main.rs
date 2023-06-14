@@ -1,6 +1,7 @@
 use std::io::Read;
 
 use bevy::{
+  math::Vec3Swizzles,
   prelude::{
     default, shape, App, Assets, Bundle, Camera2dBundle, Color, Commands,
     Component, DefaultPlugins, Entity, Handle, Image, In, IntoPipeSystem,
@@ -18,6 +19,7 @@ use image::{
   ImageDecoder, Luma,
 };
 use itertools::Itertools;
+use keyde::KdTree;
 use nokhwa::{pixel_format::LumaFormat, Camera};
 
 #[derive(Component)]
@@ -269,38 +271,35 @@ fn update_image_gradient(
 
 fn update_repel_gradient(
   all_trans: Query<&Transform>,
-  mut q: Query<(Entity, &Transform, &mut RepelGradient)>,
+  mut q: Query<(&Transform, &mut RepelGradient)>,
   all_circles: Res<TrackedCircles>,
 ) {
   const RADIUS: f32 = 50.0;
-  for (curr_circ, trans, mut grad) in q.iter_mut() {
+
+  let points: Vec<[f32; 2]> = all_trans
+    .iter_many(&all_circles.circles)
+    .map(|t| t.translation)
+    .map(|t| [t.x, t.y])
+    .collect();
+
+  let kdtree = KdTree::from_points(&points);
+
+  for (trans, mut grad) in q.iter_mut() {
     let mut new_grad = Vec2::ZERO;
     let trans = trans.translation;
+    let point = [trans.x, trans.y];
 
-    for e in &all_circles.circles {
-      if e == &curr_circ {
+    for neigh_id in kdtree.point_indices_within(point, RADIUS) {
+      let entity = all_circles.circles[neigh_id];
+      let neigh_trans = all_trans.get(entity).unwrap().translation;
+
+      let dist_sq = trans.distance_squared(neigh_trans);
+      if dist_sq < 0.0001 {
         continue;
       }
 
-      if let Ok(neigh_trans) = all_trans.get(*e) {
-        let neigh_trans = neigh_trans.translation;
-        if (trans.x - neigh_trans.x).abs() > RADIUS
-          || (trans.y - neigh_trans.y).abs() > RADIUS
-        {
-          continue;
-        }
-        let dist_sq = trans.distance_squared(neigh_trans).max(0.1);
-        if dist_sq > RADIUS {
-          continue;
-        }
-
-        let force_x = 100.0 / (trans.x - neigh_trans.y);
-        let force_y = 100.0 / (trans.y - neigh_trans.y);
-        // dbg!(force_x, force_y, neigh_trans.x - trans.x);
-
-        new_grad.x += force_x.clamp(-100.0, 100.0);
-        new_grad.y += force_y.clamp(-100.0, 100.0);
-      }
+      let force = 100.0 * (trans - neigh_trans).normalize() / dist_sq;
+      new_grad += force.xy();
     }
 
     grad.0 = new_grad;
@@ -308,10 +307,13 @@ fn update_repel_gradient(
 }
 
 fn update_velocity(
+  time: Res<Time>,
   mut q: Query<(&mut Velocity, &ImageGradient, &RepelGradient)>,
 ) {
   for (mut vel, grad, grad2) in q.iter_mut() {
-    vel.0 = grad.0 + grad2.0;
+    let force = grad.0 + grad2.0;
+    vel.0 += force * time.delta_seconds();
+    vel.0 = vel.0.clamp_length_max(100.0);
   }
 }
 
