@@ -45,6 +45,9 @@ struct ImageGradient(Vec2);
 #[derive(Component, Clone, Copy, Default)]
 struct RepelGradient(Vec2);
 
+#[derive(Component, Clone, Copy, Default)]
+struct Friction(Vec2);
+
 #[derive(Default, Resource, Bundle, Clone)]
 struct CircleBundle {
   #[bundle]
@@ -52,6 +55,7 @@ struct CircleBundle {
   velocity: Velocity,
   image_grad: ImageGradient,
   repel_gradient: RepelGradient,
+  friction: Friction,
 }
 
 #[derive(Default, Resource, Clone, Reflect)]
@@ -100,6 +104,7 @@ fn main() {
         .after(update_image_gradient)
         .after(update_repel_gradient),
     )
+    .add_system(update_friction.after(update_velocity))
     .add_system(inspect_buffer)
     .add_system(physics_velocity_system)
     .run();
@@ -298,7 +303,7 @@ fn update_repel_gradient(
         continue;
       }
 
-      let force = 100.0 * (trans - neigh_trans).normalize() / dist_sq;
+      let force = 1000.0 * (trans - neigh_trans).normalize() / dist_sq;
       new_grad += force.xy();
     }
 
@@ -306,12 +311,19 @@ fn update_repel_gradient(
   }
 }
 
+fn update_friction(mut q: Query<(&Velocity, &mut Friction)>) {
+  const FRICTION_COEFF: f32 = 0.5;
+  for (vel, mut friction) in q.iter_mut() {
+    friction.0 = -vel.0 * FRICTION_COEFF;
+  }
+}
+
 fn update_velocity(
   time: Res<Time>,
-  mut q: Query<(&mut Velocity, &ImageGradient, &RepelGradient)>,
+  mut q: Query<(&mut Velocity, &ImageGradient, &RepelGradient, &Friction)>,
 ) {
-  for (mut vel, grad, grad2) in q.iter_mut() {
-    let force = grad.0 + grad2.0;
+  for (mut vel, grad, grad2, grad3) in q.iter_mut() {
+    let force = grad.0 + grad2.0 + grad3.0;
     vel.0 += force * time.delta_seconds();
     vel.0 = vel.0.clamp_length_max(100.0);
   }
