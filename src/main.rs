@@ -1,40 +1,42 @@
-use std::io::Read;
-
 use bevy::{
   math::Vec3Swizzles,
   prelude::{
-    default, shape, App, Assets, Bundle, Camera2dBundle, Color, Commands,
-    Component, DefaultPlugins, Entity, Handle, Image, In, IntoPipeSystem,
-    IntoSystemConfig, Mesh, NonSendMut, PluginGroup, Query, Reflect,
-    ReflectResource, Res, ResMut, Resource, Transform, Vec2, Vec3, World,
+    default, resource_exists, shape, App, Assets, Bundle, Camera2dBundle,
+    Color, Commands, Component, DefaultPlugins, Entity, Handle, Image, In,
+    IntoPipeSystem, IntoSystemConfig, Mesh, PluginGroup, Query, Reflect, Res,
+    ResMut, Resource, Transform, Vec2, Vec3,
   },
-  render::render_resource::{Extent3d, TextureDimension, TextureFormat},
   sprite::{ColorMaterial, MaterialMesh2dBundle},
   time::Time,
   window::{Window, WindowPlugin},
 };
 use bevy_egui::{EguiContexts, EguiPlugin};
+use crossbeam::channel::{self, Receiver};
 use image::{
-  codecs::jpeg::JpegDecoder, GenericImageView, GrayImage, ImageBuffer,
+  codecs::jpeg::JpegDecoder, DynamicImage, GenericImageView, GrayImage,
   ImageDecoder, Luma,
 };
-use itertools::Itertools;
 use keyde::KdTree;
-use nokhwa::{pixel_format::LumaFormat, Camera};
+use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
 
 #[derive(Component)]
 struct GameCamera;
 
-#[derive(Resource, Reflect, Default)]
-#[reflect(Resource)]
-struct CameraBuffer {
-  image: Handle<Image>,
-  width: u32,
-  height: u32,
+#[derive(Resource)]
+struct CameraDev {
+  #[allow(unused)]
+  camera: CallbackCamera,
+  receiver: Receiver<nokhwa::Buffer>,
 }
+
+#[derive(Clone)]
+struct CameraFrame(nokhwa::Buffer);
 
 #[derive(Resource, Clone, Default)]
 struct LumaGrid(GrayImage);
+
+#[derive(Resource, Clone, Default)]
+struct LumaGridPreview(Handle<Image>);
 
 #[derive(Component, Clone, Copy, Default)]
 struct Velocity(Vec2);
@@ -75,7 +77,6 @@ struct StaticParam {
   pub circle_grid: (usize, usize),
   pub circle_radius: f32,
 }
-
 fn main() {
   let dim = StaticParam::new(500.0, 500.0);
   let plugins = DefaultPlugins.set(WindowPlugin {
@@ -90,14 +91,14 @@ fn main() {
   App::new()
     .add_plugins(plugins)
     .add_plugin(EguiPlugin)
+    .add_event::<CameraFrame>()
     .insert_resource(dim)
     .init_resource::<TrackedCircles>()
     .add_startup_system(setup_webcam)
     .add_startup_system(setup_camera)
     .add_startup_system(setup_circle_bundle.pipe(spawn_circles))
-    .add_system(update_camera_output)
-    .add_system(update_luma_buffer.after(update_camera_output))
-    .add_system(update_image_gradient.after(update_luma_buffer))
+    .add_system(save_camera_output.run_if(resource_exists::<CameraDev>()))
+    .add_system(update_image_gradient.run_if(resource_exists::<LumaGrid>()))
     .add_system(update_repel_gradient)
     .add_system(
       update_velocity
@@ -105,100 +106,55 @@ fn main() {
         .after(update_repel_gradient),
     )
     .add_system(update_friction.after(update_velocity))
-    .add_system(inspect_buffer)
+    .add_system(inspect_buffer.run_if(resource_exists::<LumaGridPreview>()))
     .add_system(physics_velocity_system)
     .run();
 }
 
-fn setup_webcam(world: &mut World) {
+fn setup_webcam(mut commands: Commands) {
   use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
   let index = CameraIndex::Index(0);
   let requested = RequestedFormat::new::<LumaFormat>(
     RequestedFormatType::AbsoluteHighestResolution,
   );
 
-  let mut camera = Camera::new(index, requested).unwrap();
-  let resolution = camera.resolution();
-  camera.open_stream().unwrap();
-  world.insert_non_send_resource(camera);
+  let camera = Camera::new(index, requested).unwrap();
 
-  let width = resolution.width();
-  let height = resolution.height();
-  let extent = Extent3d {
-    width,
-    height,
-    depth_or_array_layers: 1,
-  };
-  let dimension = TextureDimension::D2;
-  let format = TextureFormat::Rgba8UnormSrgb;
-  let image = Image::new_fill(extent, dimension, &[100, 0, 0, 255], format);
-
-  let mut images = world.get_resource_mut::<Assets<Image>>().unwrap();
-  let image = images.add(image);
-
-  let param = world.resource::<StaticParam>();
-  let luma_grid = ImageBuffer::new(param.size.0 as u32, param.size.1 as u32);
-
-  world.insert_resource(CameraBuffer {
-    image,
-    width,
-    height,
+  let (sender, receiver) = channel::unbounded();
+  let mut camera = CallbackCamera::with_custom(camera, move |buffer| {
+    sender.send(buffer).unwrap();
   });
-  world.insert_resource(LumaGrid(luma_grid));
+  camera.open_stream().unwrap();
+
+  commands.insert_resource(CameraDev { camera, receiver });
 }
 
 fn setup_camera(mut commands: Commands) {
   commands.spawn((Camera2dBundle::default(), GameCamera));
 }
 
-fn update_camera_output(
-  mut camera: Option<NonSendMut<Camera>>,
-  mut buffer: Option<ResMut<CameraBuffer>>,
+fn save_camera_output(
+  mut commands: Commands,
+  camera_dev: Res<CameraDev>,
+  mut luma_grid: Option<ResMut<LumaGrid>>,
+  mut preview: Option<ResMut<LumaGridPreview>>,
   mut images: ResMut<Assets<Image>>,
+  param: Res<StaticParam>,
 ) {
   use nokhwa::utils::FrameFormat::MJPEG;
 
-  let camera = match camera.as_mut() {
-    Some(camera) => camera,
-    None => return,
-  };
-  let image = match buffer.as_mut() {
-    Some(buffer) => images.get_mut(&buffer.image).unwrap(),
-    None => return,
+  let receiver = &camera_dev.receiver;
+  let Ok(frame) = receiver.try_recv() else {
+    return;
   };
 
-  let frame = camera.frame().unwrap();
-  debug_assert!(frame.source_frame_format() == MJPEG);
+  assert!(frame.source_frame_format() == MJPEG);
 
   let decoder = JpegDecoder::new(frame.buffer()).unwrap();
-
   debug_assert!(decoder.color_type() == image::ColorType::Rgb8);
 
-  decoder
-    .into_reader()
-    .unwrap()
-    .bytes()
-    .tuples()
-    .zip(image.data.iter_mut().tuples())
-    .for_each(|((r, g, b), (dr, dg, db, _da))| {
-      *dr = r.unwrap();
-      *dg = g.unwrap();
-      *db = b.unwrap();
-    });
-}
+  let image: DynamicImage = frame.decode_image::<LumaFormat>().unwrap().into();
 
-fn update_luma_buffer(
-  buffer: Option<Res<CameraBuffer>>,
-  images: Res<Assets<Image>>,
-  params: Res<StaticParam>,
-  mut luma_grid: ResMut<LumaGrid>,
-) {
-  let image = match buffer {
-    Some(buffer) => images.get(&buffer.image).unwrap(),
-    None => return,
-  };
-
-  let image = image.clone().try_into_dynamic().unwrap();
   let dim = image.height().min(image.width());
   let image = image
     .crop_imm(
@@ -208,12 +164,38 @@ fn update_luma_buffer(
       dim,
     )
     .resize_exact(
-      params.width() as u32,
-      params.height() as u32,
+      param.width() as u32,
+      param.height() as u32,
       image::imageops::FilterType::Nearest,
     );
 
-  luma_grid.0 = image.into_luma8();
+  if let Some(preview) = preview.as_mut() {
+    let bevy_image = images.get_mut(&preview.0).unwrap();
+    bevy_image.data.copy_from_slice(image.as_bytes());
+  } else {
+    let data = image.as_bytes().to_vec();
+    let width = image.width();
+    let height = image.height();
+    let format = bevy::render::render_resource::TextureFormat::R8Unorm;
+    let bevy_image = Image::new(
+      bevy::render::render_resource::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+      },
+      bevy::render::render_resource::TextureDimension::D2,
+      data,
+      format,
+    );
+    let handle = images.add(bevy_image);
+    commands.insert_resource(LumaGridPreview(handle));
+  }
+
+  if let Some(luma_grid) = luma_grid.as_mut() {
+    luma_grid.0.copy_from_slice(image.as_bytes());
+  } else {
+    commands.insert_resource(LumaGrid(image.into_luma8()));
+  }
 }
 
 fn setup_circle_bundle(
@@ -346,29 +328,19 @@ fn physics_velocity_system(
   }
 }
 
-fn inspect_buffer(
-  mut ctx: EguiContexts,
-  mut buffer: Option<ResMut<CameraBuffer>>,
-) {
-  let buffer = match buffer.as_mut() {
-    Some(buffer) => buffer,
-    None => return,
-  };
-
+fn inspect_buffer(mut ctx: EguiContexts, preview: Res<LumaGridPreview>) {
   const SCALE: f32 = 0.1;
 
+  let preview_handle = &preview.0;
+
   let texture_id = ctx
-    .image_id(&buffer.image)
-    .unwrap_or_else(|| ctx.add_image(buffer.image.clone()));
+    .image_id(preview_handle)
+    .unwrap_or_else(|| ctx.add_image(preview_handle.clone()));
 
   bevy_inspector_egui::egui::Window::new("Camera Buffer").show(
     ctx.ctx_mut(),
     |ui| {
-      ui.label(format!("Image: {}x{}", buffer.width, buffer.height));
-      ui.image(
-        texture_id,
-        [buffer.width as f32 * SCALE, buffer.height as f32 * SCALE],
-      );
+      ui.image(texture_id, [100.0, 100.0]);
     },
   );
 }
