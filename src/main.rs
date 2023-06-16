@@ -120,7 +120,8 @@ fn setup_webcam(mut commands: Commands) {
 
   let camera = Camera::new(index, requested).unwrap();
 
-  let (sender, receiver) = channel::unbounded();
+  let (sender, receiver) = channel::bounded(1);
+
   let mut camera = CallbackCamera::with_custom(camera, move |buffer| {
     sender.send(buffer).unwrap();
   });

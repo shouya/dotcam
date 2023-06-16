@@ -20,5 +20,9 @@ futures-lite = "1.13.0"
 image = "0.24.6"
 itertools = "0.10.5"
 keyde = "0.2.4"
-nokhwa = { version = "0.10.4", features = ["input-native", "output-threaded"] }
+# use nokhwa from git upstream https://github.com/l1npengtul/nokhwa, branch 0.10
+#
+# the crates.io version has a deadlock issue, see https://github.com/l1npengtul/nokhwa/pull/112. switch back when this fix gets released.
+nokhwa = { git = "https://github.com/l1npengtul/nokhwa.git", branch = "0.10", features = ["input-native", "output-threaded"] }
+# nokhwa = { version = "0.10.4", features = ["input-native", "output-threaded"] }
 rand = "0.8.5"
