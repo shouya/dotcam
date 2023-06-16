@@ -262,7 +262,8 @@ fn update_repel_gradient(
   mut q: Query<(&Transform, &mut RepelGradient)>,
   all_circles: Res<TrackedCircles>,
 ) {
-  const RADIUS: f32 = 50.0;
+  const RADIUS: f32 = 5.0;
+  const ALT_RADIUS: f32 = 30.0;
 
   let points: Vec<[f32; 2]> = all_trans
     .iter_many(&all_circles.circles)
@@ -277,7 +278,14 @@ fn update_repel_gradient(
     let trans = trans.translation;
     let point = [trans.x, trans.y];
 
-    for neigh_id in kdtree.point_indices_within(point, RADIUS) {
+    // 1% of the time, use a larger radius to avoid getting stuck
+    let radius = if rand::random::<f32>() < 0.01 {
+      ALT_RADIUS
+    } else {
+      RADIUS
+    };
+
+    for neigh_id in kdtree.point_indices_within(point, radius) {
       let entity = all_circles.circles[neigh_id];
       let neigh_trans = all_trans.get(entity).unwrap().translation;
 
@@ -295,7 +303,7 @@ fn update_repel_gradient(
 }
 
 fn update_friction(mut q: Query<(&Velocity, &mut Friction)>) {
-  const FRICTION_COEFF: f32 = 0.5;
+  const FRICTION_COEFF: f32 = 10.0;
   for (vel, mut friction) in q.iter_mut() {
     friction.0 = -vel.0 * FRICTION_COEFF;
   }
@@ -308,7 +316,7 @@ fn update_velocity(
   for (mut vel, grad, grad2, grad3) in q.iter_mut() {
     let force = grad.0 + grad2.0 + grad3.0;
     vel.0 += force * time.delta_seconds();
-    vel.0 = vel.0.clamp_length_max(100.0);
+    vel.0 = vel.0.clamp_length_max(1000.0);
   }
 }
 
@@ -349,7 +357,7 @@ fn inspect_buffer(mut ctx: EguiContexts, preview: Res<LumaGridPreview>) {
 impl StaticParam {
   fn new(width: f32, height: f32) -> Self {
     let viewport_size = (width, height);
-    let circle_grid = (30, 30);
+    let circle_grid = (100, 100);
     let circle_radius = 1.0;
 
     Self {
@@ -437,5 +445,5 @@ fn find_gradient(
   grad.x = get_pixel(x + 1, y) - get_pixel(x - 1, y);
   grad.y = get_pixel(x, y + 1) - get_pixel(x, y - 1);
 
-  grad * 2.0
+  grad * -100.0
 }
