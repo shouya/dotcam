@@ -1,16 +1,20 @@
 use bevy::{
   math::Vec3Swizzles,
   prelude::{
-    default, resource_exists, shape, App, Assets, Bundle, Camera2dBundle,
-    Color, Commands, Component, DefaultPlugins, Entity, Handle, Image, In,
-    IntoPipeSystem, IntoSystemConfig, Mesh, PluginGroup, Query, Reflect, Res,
-    ResMut, Resource, Transform, Vec2, Vec3,
+    default, on_event, resource_exists, shape, App, Assets, Bundle,
+    Camera2dBundle, Color, Commands, Component, DefaultPlugins, Entity, Handle,
+    Image, In, IntoPipeSystem, IntoSystemConfig, Mesh, PluginGroup, Query,
+    Reflect, ReflectResource, Res, ResMut, Resource, Transform, Vec2, Vec3,
   },
   sprite::{ColorMaterial, MaterialMesh2dBundle},
   time::Time,
-  window::{Window, WindowPlugin},
+  window::{Window, WindowCloseRequested, WindowPlugin},
 };
 use bevy_egui::{EguiContexts, EguiPlugin};
+use bevy_inspector_egui::{
+  prelude::ReflectInspectorOptions, quick::ResourceInspectorPlugin,
+  InspectorOptions,
+};
 use crossbeam::channel::{self, Receiver};
 use image::{
   codecs::jpeg::JpegDecoder, DynamicImage, GenericImageView, GrayImage,
@@ -77,12 +81,37 @@ struct StaticParam {
   pub circle_grid: (usize, usize),
   pub circle_radius: f32,
 }
+
+#[derive(Resource, Reflect, InspectorOptions)]
+#[reflect(Resource, InspectorOptions)]
+struct DynamicParam {
+  #[inspector(min = 0.0, max = 100.0)]
+  pub friction_coeff: f32,
+  #[inspector(min = 0.0, max = 1000.0)]
+  pub repel_coeff: f32,
+  #[inspector(min = -1000.0, max = 1000.0)]
+  pub gradient_scale: f32,
+  #[inspector(min = 0.0, max = 10000.0)]
+  pub max_velocity: f32,
+}
+
+impl Default for DynamicParam {
+  fn default() -> Self {
+    Self {
+      friction_coeff: 10.0,
+      repel_coeff: 100.0,
+      gradient_scale: -100.0,
+      max_velocity: 1000.0,
+    }
+  }
+}
+
 fn main() {
-  let dim = StaticParam::new(500.0, 500.0);
+  let static_param = StaticParam::default();
   let plugins = DefaultPlugins.set(WindowPlugin {
     primary_window: Some(Window {
       title: "Dotcam".into(),
-      resolution: dim.resolution(),
+      resolution: static_param.resolution(),
       ..default()
     }),
     ..default()
@@ -92,8 +121,10 @@ fn main() {
     .add_plugins(plugins)
     .add_plugin(EguiPlugin)
     .add_event::<CameraFrame>()
-    .insert_resource(dim)
+    .insert_resource(static_param)
+    .init_resource::<DynamicParam>()
     .init_resource::<TrackedCircles>()
+    .add_plugin(ResourceInspectorPlugin::<DynamicParam>::default())
     .add_startup_system(setup_webcam)
     .add_startup_system(setup_camera)
     .add_startup_system(setup_circle_bundle.pipe(spawn_circles))
@@ -108,6 +139,7 @@ fn main() {
     .add_system(update_friction.after(update_velocity))
     .add_system(inspect_buffer.run_if(resource_exists::<LumaGridPreview>()))
     .add_system(physics_velocity_system)
+    .add_system(stop_webcam.run_if(on_event::<WindowCloseRequested>()))
     .run();
 }
 
@@ -244,6 +276,7 @@ fn spawn_circles(
 }
 
 fn update_image_gradient(
+  dynamic_param: Res<DynamicParam>,
   mut q: Query<(&Transform, &mut ImageGradient)>,
   luma_grid: Res<LumaGrid>,
   param: Res<StaticParam>,
@@ -251,13 +284,15 @@ fn update_image_gradient(
   let luma_grid = &luma_grid.0;
   for (trans, mut grad) in q.iter_mut() {
     let [x, y] = param.translation_to_pixel(&trans.translation);
-    let new_grad = find_gradient(luma_grid, x, y);
+    let new_grad =
+      find_gradient(luma_grid, x, y) * dynamic_param.gradient_scale;
 
     *grad = ImageGradient(new_grad);
   }
 }
 
 fn update_repel_gradient(
+  dynamic_param: Res<DynamicParam>,
   all_trans: Query<&Transform>,
   mut q: Query<(&Transform, &mut RepelGradient)>,
   all_circles: Res<TrackedCircles>,
@@ -294,29 +329,32 @@ fn update_repel_gradient(
         continue;
       }
 
-      let force = 1000.0 * (trans - neigh_trans).normalize() / dist_sq;
+      let force = (trans - neigh_trans).normalize() / dist_sq;
       new_grad += force.xy();
     }
 
-    grad.0 = new_grad;
+    grad.0 = new_grad * dynamic_param.repel_coeff;
   }
 }
 
-fn update_friction(mut q: Query<(&Velocity, &mut Friction)>) {
-  const FRICTION_COEFF: f32 = 10.0;
+fn update_friction(
+  dyn_param: Res<DynamicParam>,
+  mut q: Query<(&Velocity, &mut Friction)>,
+) {
   for (vel, mut friction) in q.iter_mut() {
-    friction.0 = -vel.0 * FRICTION_COEFF;
+    friction.0 = -vel.0 * dyn_param.friction_coeff;
   }
 }
 
 fn update_velocity(
   time: Res<Time>,
+  dyn_param: Res<DynamicParam>,
   mut q: Query<(&mut Velocity, &ImageGradient, &RepelGradient, &Friction)>,
 ) {
   for (mut vel, grad, grad2, grad3) in q.iter_mut() {
     let force = grad.0 + grad2.0 + grad3.0;
     vel.0 += force * time.delta_seconds();
-    vel.0 = vel.0.clamp_length_max(1000.0);
+    vel.0 = vel.0.clamp_length_max(dyn_param.max_velocity);
   }
 }
 
@@ -338,8 +376,6 @@ fn physics_velocity_system(
 }
 
 fn inspect_buffer(mut ctx: EguiContexts, preview: Res<LumaGridPreview>) {
-  const SCALE: f32 = 0.1;
-
   let preview_handle = &preview.0;
 
   let texture_id = ctx
@@ -354,19 +390,25 @@ fn inspect_buffer(mut ctx: EguiContexts, preview: Res<LumaGridPreview>) {
   );
 }
 
-impl StaticParam {
-  fn new(width: f32, height: f32) -> Self {
-    let viewport_size = (width, height);
-    let circle_grid = (100, 100);
-    let circle_radius = 1.0;
+fn stop_webcam(mut _webcam: ResMut<CameraDev>) {
+  // it's unable to acquire lock from another thread to stop
+  // the camera stream. resulting the program to hang.
+  //
+  // this hack is simply exit the program.
+  std::process::exit(0);
+}
 
+impl Default for StaticParam {
+  fn default() -> Self {
     Self {
-      size: viewport_size,
-      circle_grid,
-      circle_radius,
+      size: (500.0, 500.0),
+      circle_grid: (60, 60),
+      circle_radius: 1.0,
     }
   }
+}
 
+impl StaticParam {
   fn width(&self) -> f32 {
     self.size.0
   }
@@ -445,5 +487,5 @@ fn find_gradient(
   grad.x = get_pixel(x + 1, y) - get_pixel(x - 1, y);
   grad.y = get_pixel(x, y + 1) - get_pixel(x, y - 1);
 
-  grad * -100.0
+  grad
 }
