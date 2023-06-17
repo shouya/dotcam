@@ -30,11 +30,8 @@ struct GameCamera;
 struct CameraDev {
   #[allow(unused)]
   camera: CallbackCamera,
-  receiver: Receiver<nokhwa::Buffer>,
+  receiver: Receiver<DynamicImage>,
 }
-
-#[derive(Clone)]
-struct CameraFrame(nokhwa::Buffer);
 
 #[derive(Resource, Clone, Default)]
 struct LumaGrid(GrayImage);
@@ -120,7 +117,6 @@ fn main() {
   App::new()
     .add_plugins(plugins)
     .add_plugin(EguiPlugin)
-    .add_event::<CameraFrame>()
     .insert_resource(static_param)
     .init_resource::<DynamicParam>()
     .init_resource::<TrackedCircles>()
@@ -143,7 +139,7 @@ fn main() {
     .run();
 }
 
-fn setup_webcam(mut commands: Commands) {
+fn setup_webcam(mut commands: Commands, param: Res<StaticParam>) {
   use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
   let index = CameraIndex::Index(0);
   let requested = RequestedFormat::new::<LumaFormat>(
@@ -154,8 +150,10 @@ fn setup_webcam(mut commands: Commands) {
 
   let (sender, receiver) = channel::bounded(1);
 
+  let size = [param.width() as u32, param.height() as u32];
   let mut camera = CallbackCamera::with_custom(camera, move |buffer| {
-    sender.send(buffer).unwrap();
+    let image = camera_buffer_to_image(buffer, size);
+    sender.send(image).unwrap();
   });
   camera.open_stream().unwrap();
 
@@ -166,27 +164,18 @@ fn setup_camera(mut commands: Commands) {
   commands.spawn((Camera2dBundle::default(), GameCamera));
 }
 
-fn save_camera_output(
-  mut commands: Commands,
-  camera_dev: Res<CameraDev>,
-  mut luma_grid: Option<ResMut<LumaGrid>>,
-  mut preview: Option<ResMut<LumaGridPreview>>,
-  mut images: ResMut<Assets<Image>>,
-  param: Res<StaticParam>,
-) {
+fn camera_buffer_to_image(
+  buffer: nokhwa::Buffer,
+  size: [u32; 2],
+) -> DynamicImage {
   use nokhwa::utils::FrameFormat::MJPEG;
 
-  let receiver = &camera_dev.receiver;
-  let Ok(frame) = receiver.try_recv() else {
-    return;
-  };
+  assert!(buffer.source_frame_format() == MJPEG);
 
-  assert!(frame.source_frame_format() == MJPEG);
-
-  let decoder = JpegDecoder::new(frame.buffer()).unwrap();
+  let decoder = JpegDecoder::new(buffer.buffer()).unwrap();
   debug_assert!(decoder.color_type() == image::ColorType::Rgb8);
 
-  let image: DynamicImage = frame.decode_image::<LumaFormat>().unwrap().into();
+  let image: DynamicImage = buffer.decode_image::<LumaFormat>().unwrap().into();
 
   let dim = image.height().min(image.width());
   let image = image
@@ -196,11 +185,23 @@ fn save_camera_output(
       dim,
       dim,
     )
-    .resize_exact(
-      param.width() as u32,
-      param.height() as u32,
-      image::imageops::FilterType::Nearest,
-    );
+    .resize_exact(size[0], size[1], image::imageops::FilterType::Nearest)
+    .fliph();
+
+  image
+}
+
+fn save_camera_output(
+  mut commands: Commands,
+  camera_dev: Res<CameraDev>,
+  mut luma_grid: Option<ResMut<LumaGrid>>,
+  mut preview: Option<ResMut<LumaGridPreview>>,
+  mut images: ResMut<Assets<Image>>,
+) {
+  let receiver = &camera_dev.receiver;
+  let Ok(image) = receiver.try_recv() else {
+    return;
+  };
 
   if let Some(preview) = preview.as_mut() {
     let bevy_image = images.get_mut(&preview.0).unwrap();
