@@ -1,7 +1,8 @@
 use bevy::{
+  diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
   math::Vec3Swizzles,
   prelude::{
-    default, on_event, resource_exists, shape, App, Assets, Bundle,
+    default, on_event, resource_exists, shape, App, Assets, Bundle, Camera2d,
     Camera2dBundle, Color, Commands, Component, DefaultPlugins, Entity, Handle,
     Image, In, IntoPipeSystem, IntoSystemConfig, Mesh, PluginGroup, Query,
     Reflect, ReflectResource, Res, ResMut, Resource, Transform, Vec2, Vec3,
@@ -16,10 +17,7 @@ use bevy_inspector_egui::{
   InspectorOptions,
 };
 use crossbeam::channel::{self, Receiver};
-use image::{
-  codecs::jpeg::JpegDecoder, DynamicImage, GenericImageView, GrayImage,
-  ImageDecoder, Luma,
-};
+use image::{codecs::jpeg::JpegDecoder, DynamicImage, GrayImage, ImageDecoder};
 use keyde::KdTree;
 use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
 
@@ -121,6 +119,8 @@ fn main() {
     .init_resource::<DynamicParam>()
     .init_resource::<TrackedCircles>()
     .add_plugin(ResourceInspectorPlugin::<DynamicParam>::default())
+    .add_plugin(FrameTimeDiagnosticsPlugin)
+    .add_plugin(LogDiagnosticsPlugin::default())
     .add_startup_system(setup_webcam)
     .add_startup_system(setup_camera)
     .add_startup_system(setup_circle_bundle.pipe(spawn_circles))
@@ -161,7 +161,15 @@ fn setup_webcam(mut commands: Commands, param: Res<StaticParam>) {
 }
 
 fn setup_camera(mut commands: Commands) {
-  commands.spawn((Camera2dBundle::default(), GameCamera));
+  let camera_2d = Camera2d {
+    clear_color: bevy::core_pipeline::clear_color::ClearColorConfig::Custom(
+      Color::BLACK,
+    ),
+  };
+
+  commands
+    .spawn((Camera2dBundle::default(), GameCamera))
+    .insert(camera_2d);
 }
 
 fn camera_buffer_to_image(
@@ -186,9 +194,12 @@ fn camera_buffer_to_image(
       dim,
     )
     .resize_exact(size[0], size[1], image::imageops::FilterType::Nearest)
-    .fliph();
+    .fliph()
+    .into_luma8();
 
-  image
+  // image = imageproc::contrast::adaptive_threshold(&image, 10);
+
+  image.into()
 }
 
 fn save_camera_output(
@@ -245,7 +256,7 @@ fn setup_circle_bundle(
     }))
     .into();
 
-  let material_handle = materials.add(Color::rgb(1.0, 0.7, 0.7).into());
+  let material_handle = materials.add(Color::rgb(1.0, 1.0, 1.0).into());
   let bundle = CircleBundle {
     mesh: MaterialMesh2dBundle {
       mesh: mesh_handle,
@@ -283,10 +294,15 @@ fn update_image_gradient(
   param: Res<StaticParam>,
 ) {
   let luma_grid = &luma_grid.0;
+  let horizontal_gradient = imageproc::gradients::horizontal_sobel(luma_grid);
+  let vertical_gradient = imageproc::gradients::vertical_sobel(luma_grid);
+
   for (trans, mut grad) in q.iter_mut() {
     let [x, y] = param.translation_to_pixel(&trans.translation);
-    let new_grad =
-      find_gradient(luma_grid, x, y) * dynamic_param.gradient_scale;
+    let dx = horizontal_gradient.get_pixel(x, y)[0] as f32;
+    let dy = vertical_gradient.get_pixel(x, y)[0] as f32;
+
+    let new_grad = Vec2::new(dx, dy) * dynamic_param.gradient_scale;
 
     *grad = ImageGradient(new_grad);
   }
@@ -298,8 +314,8 @@ fn update_repel_gradient(
   mut q: Query<(&Transform, &mut RepelGradient)>,
   all_circles: Res<TrackedCircles>,
 ) {
-  const RADIUS: f32 = 5.0;
-  const ALT_RADIUS: f32 = 30.0;
+  const RADIUS: f32 = 4.0;
+  const ALT_RADIUS: f32 = 100.0;
 
   let points: Vec<[f32; 2]> = all_trans
     .iter_many(&all_circles.circles)
@@ -403,7 +419,7 @@ impl Default for StaticParam {
   fn default() -> Self {
     Self {
       size: (500.0, 500.0),
-      circle_grid: (60, 60),
+      circle_grid: (100, 100),
       circle_radius: 1.0,
     }
   }
@@ -454,7 +470,10 @@ impl StaticParam {
     let [x0, x1, y0, y1] = self.boundary();
     let x = (translation.x - x0) / (x1 - x0) * self.width();
     let y = (1.0 - (translation.y - y0) / (y1 - y0)) * self.height();
-    [x as u32, y as u32]
+    [
+      (x as u32).clamp(0, (x1 - y0) as u32 - 1),
+      (y as u32).clamp(0, (y1 - y0) as u32 - 1),
+    ]
   }
 }
 
@@ -471,22 +490,4 @@ fn wrap_around(mut v: f32, min: f32, max: f32) -> f32 {
     v -= range;
   }
   v
-}
-
-fn find_gradient(
-  luma_grid: &impl GenericImageView<Pixel = Luma<u8>>,
-  x: u32,
-  y: u32,
-) -> Vec2 {
-  let mut grad = Vec2::ZERO;
-  let x = x.max(1).min(luma_grid.width() - 2);
-  let y = y.max(1).min(luma_grid.height() - 2);
-
-  let get_pixel =
-    |x: u32, y: u32| -> f32 { luma_grid.get_pixel(x, y).0[0] as f32 };
-
-  grad.x = get_pixel(x + 1, y) - get_pixel(x - 1, y);
-  grad.y = get_pixel(x, y + 1) - get_pixel(x, y - 1);
-
-  grad
 }

@@ -18,6 +18,7 @@ convolve2d = { version = "0.1.0", features = ["image"] }
 crossbeam = { version = "0.8.2", features = ["crossbeam-channel"] }
 futures-lite = "1.13.0"
 image = "0.24.6"
+imageproc = "0.23.0"
 itertools = "0.10.5"
 keyde = "0.2.4"
 # use nokhwa from git upstream https://github.com/l1npengtul/nokhwa, branch 0.10
