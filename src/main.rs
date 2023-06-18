@@ -2,10 +2,11 @@ use bevy::{
   diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
   math::Vec3Swizzles,
   prelude::{
-    default, on_event, resource_exists, shape, App, Assets, Bundle, Camera2d,
-    Camera2dBundle, Color, Commands, Component, DefaultPlugins, Entity, Handle,
-    Image, In, IntoPipeSystem, IntoSystemConfig, Mesh, PluginGroup, Query,
-    Reflect, ReflectResource, Res, ResMut, Resource, Transform, Vec2, Vec3,
+    default, on_event, resource_changed, resource_exists, shape, App, Assets,
+    Bundle, Camera2d, Camera2dBundle, Color, Commands, Component, Condition,
+    DefaultPlugins, Entity, Handle, Image, In, IntoPipeSystem,
+    IntoSystemConfig, Mesh, PluginGroup, Query, Reflect, ReflectResource, Res,
+    ResMut, Resource, Transform, Vec2, Vec3,
   },
   sprite::{ColorMaterial, MaterialMesh2dBundle},
   time::Time,
@@ -17,7 +18,11 @@ use bevy_inspector_egui::{
   InspectorOptions,
 };
 use crossbeam::channel::{self, Receiver};
-use image::{codecs::jpeg::JpegDecoder, DynamicImage, GrayImage, ImageDecoder};
+use image::{
+  codecs::jpeg::JpegDecoder,
+  imageops::{resize, FilterType},
+  DynamicImage, GrayImage, ImageBuffer, ImageDecoder, Luma,
+};
 use keyde::KdTree;
 use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
 
@@ -94,8 +99,8 @@ impl Default for DynamicParam {
   fn default() -> Self {
     Self {
       friction_coeff: 10.0,
-      repel_coeff: 100.0,
-      gradient_scale: -100.0,
+      repel_coeff: 1000.0,
+      gradient_scale: 10.0,
       max_velocity: 1000.0,
     }
   }
@@ -125,7 +130,9 @@ fn main() {
     .add_startup_system(setup_camera)
     .add_startup_system(setup_circle_bundle.pipe(spawn_circles))
     .add_system(save_camera_output.run_if(resource_exists::<CameraDev>()))
-    .add_system(update_image_gradient.run_if(resource_exists::<LumaGrid>()))
+    .add_system(update_image_gradient.run_if(
+      resource_exists::<LumaGrid>().and_then(resource_changed::<LumaGrid>()),
+    ))
     .add_system(update_repel_gradient)
     .add_system(
       update_velocity
@@ -294,8 +301,8 @@ fn update_image_gradient(
   param: Res<StaticParam>,
 ) {
   let luma_grid = &luma_grid.0;
-  let horizontal_gradient = imageproc::gradients::horizontal_sobel(luma_grid);
-  let vertical_gradient = imageproc::gradients::vertical_sobel(luma_grid);
+
+  let [horizontal_gradient, vertical_gradient] = calc_gradient(luma_grid, 4);
 
   for (trans, mut grad) in q.iter_mut() {
     let [x, y] = param.translation_to_pixel(&trans.translation);
@@ -308,14 +315,56 @@ fn update_image_gradient(
   }
 }
 
+fn calc_gradient(
+  image: &GrayImage,
+  n_iter: usize,
+) -> [ImageBuffer<Luma<i16>, Vec<i16>>; 2] {
+  let (w, h) = (image.width(), image.height());
+
+  let mut horizontal_gradients = Vec::new();
+  let mut vertical_gradients = Vec::new();
+  let mut image = image.clone();
+  for i in 0..n_iter {
+    let horz = imageproc::gradients::horizontal_sobel(&image);
+    let vert = imageproc::gradients::vertical_sobel(&image);
+
+    horizontal_gradients.push(resize(&horz, w, h, FilterType::Nearest));
+    vertical_gradients.push(resize(&vert, w, h, FilterType::Nearest));
+
+    if i == n_iter - 1 {
+      // save a resize
+      break;
+    }
+    image = resize(
+      &image,
+      image.width() / 2,
+      image.height() / 2,
+      FilterType::Triangle,
+    );
+  }
+
+  let avg_gradient = |grads: &Vec<ImageBuffer<Luma<i16>, Vec<i16>>>| {
+    ImageBuffer::from_fn(w, h, |x, y| {
+      let sum = grads
+        .iter()
+        .map(|g| g.get_pixel(x, y)[0] as i32)
+        .sum::<i32>();
+      Luma([(sum / n_iter as i32) as i16])
+    })
+  };
+  let horizontal_gradient = avg_gradient(&horizontal_gradients);
+  let vertical_gradient = avg_gradient(&vertical_gradients);
+
+  [horizontal_gradient, vertical_gradient]
+}
+
 fn update_repel_gradient(
   dynamic_param: Res<DynamicParam>,
   all_trans: Query<&Transform>,
   mut q: Query<(&Transform, &mut RepelGradient)>,
   all_circles: Res<TrackedCircles>,
 ) {
-  const RADIUS: f32 = 4.0;
-  const ALT_RADIUS: f32 = 100.0;
+  const RADIUS: f32 = 1.0;
 
   let points: Vec<[f32; 2]> = all_trans
     .iter_many(&all_circles.circles)
@@ -330,14 +379,7 @@ fn update_repel_gradient(
     let trans = trans.translation;
     let point = [trans.x, trans.y];
 
-    // 1% of the time, use a larger radius to avoid getting stuck
-    let radius = if rand::random::<f32>() < 0.01 {
-      ALT_RADIUS
-    } else {
-      RADIUS
-    };
-
-    for neigh_id in kdtree.point_indices_within(point, radius) {
+    for neigh_id in kdtree.point_indices_within(point, RADIUS) {
       let entity = all_circles.circles[neigh_id];
       let neigh_trans = all_trans.get(entity).unwrap().translation;
 
