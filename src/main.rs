@@ -328,28 +328,31 @@ fn calc_gradient(
     let horz = imageproc::gradients::horizontal_sobel(&image);
     let vert = imageproc::gradients::vertical_sobel(&image);
 
-    horizontal_gradients.push(resize(&horz, w, h, FilterType::Nearest));
-    vertical_gradients.push(resize(&vert, w, h, FilterType::Nearest));
+    horizontal_gradients.push(horz);
+    vertical_gradients.push(vert);
 
     if i == n_iter - 1 {
       // save a resize
       break;
     }
+
     image = resize(
       &image,
       image.width() / 2,
       image.height() / 2,
-      FilterType::Triangle,
+      FilterType::Nearest,
     );
   }
 
   let avg_gradient = |grads: &Vec<ImageBuffer<Luma<i16>, Vec<i16>>>| {
     ImageBuffer::from_fn(w, h, |x, y| {
-      let sum = grads
-        .iter()
-        .map(|g| g.get_pixel(x, y)[0] as i32)
-        .sum::<i32>();
-      Luma([(sum / n_iter as i32) as i16])
+      let mut grad = 0;
+      (0..n_iter).for_each(|i| {
+        let new_x = (x / 2_u32.pow(i as u32)).min(grads[i].width() - 1);
+        let new_y = (y / 2_u32.pow(i as u32)).min(grads[i].height() - 1);
+        grad += grads[i].get_pixel(new_x, new_y)[0];
+      });
+      Luma([grad / n_iter as i16])
     })
   };
   let horizontal_gradient = avg_gradient(&horizontal_gradients);
