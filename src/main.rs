@@ -100,7 +100,7 @@ impl Default for DynamicParam {
     Self {
       friction_coeff: 10.0,
       repel_coeff: 1000.0,
-      gradient_scale: 10.0,
+      gradient_scale: 3.0,
       max_velocity: 1000.0,
     }
   }
@@ -367,7 +367,7 @@ fn update_repel_gradient(
   mut q: Query<(&Transform, &mut RepelGradient)>,
   all_circles: Res<TrackedCircles>,
 ) {
-  const RADIUS: f32 = 1.0;
+  const RADIUS: f32 = 4.0;
 
   let points: Vec<[f32; 2]> = all_trans
     .iter_many(&all_circles.circles)
