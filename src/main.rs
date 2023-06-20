@@ -18,10 +18,12 @@ use bevy_inspector_egui::{
   InspectorOptions,
 };
 use crossbeam::channel::{self, Receiver};
+use image::DynamicImage;
+use image::GenericImageView;
 use image::{
   codecs::jpeg::JpegDecoder,
-  imageops::{resize, FilterType},
-  DynamicImage, GrayImage, ImageBuffer, ImageDecoder, Luma,
+  imageops::{filter3x3, resize, FilterType},
+  GrayImage, ImageBuffer, ImageDecoder, Luma, Pixel,
 };
 use keyde::KdTree;
 use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
@@ -41,6 +43,9 @@ struct LumaGrid(GrayImage);
 
 #[derive(Resource, Clone, Default)]
 struct LumaGridPreview(Handle<Image>);
+
+#[derive(Resource, Clone, Default)]
+struct Preview1(Handle<Image>);
 
 #[derive(Component, Clone, Copy, Default)]
 struct Velocity(Vec2);
@@ -98,9 +103,9 @@ struct DynamicParam {
 impl Default for DynamicParam {
   fn default() -> Self {
     Self {
-      friction_coeff: 10.0,
+      friction_coeff: 0.5,
       repel_coeff: 1000.0,
-      gradient_scale: 3.0,
+      gradient_scale: 10.0,
       max_velocity: 1000.0,
     }
   }
@@ -139,7 +144,6 @@ fn main() {
         .after(update_image_gradient)
         .after(update_repel_gradient),
     )
-    .add_system(update_friction.after(update_velocity))
     .add_system(inspect_buffer.run_if(resource_exists::<LumaGridPreview>()))
     .add_system(physics_velocity_system)
     .add_system(stop_webcam.run_if(on_event::<WindowCloseRequested>()))
@@ -170,7 +174,7 @@ fn setup_webcam(mut commands: Commands, param: Res<StaticParam>) {
 fn setup_camera(mut commands: Commands) {
   let camera_2d = Camera2d {
     clear_color: bevy::core_pipeline::clear_color::ClearColorConfig::Custom(
-      Color::BLACK,
+      Color::WHITE,
     ),
   };
 
@@ -263,7 +267,7 @@ fn setup_circle_bundle(
     }))
     .into();
 
-  let material_handle = materials.add(Color::rgb(1.0, 1.0, 1.0).into());
+  let material_handle = materials.add(Color::rgb(0.0, 0.0, 0.0).into());
   let bundle = CircleBundle {
     mesh: MaterialMesh2dBundle {
       mesh: mesh_handle,
@@ -309,7 +313,8 @@ fn update_image_gradient(
     let dx = horizontal_gradient.get_pixel(x, y)[0] as f32;
     let dy = vertical_gradient.get_pixel(x, y)[0] as f32;
 
-    let new_grad = Vec2::new(dx, dy) * dynamic_param.gradient_scale;
+    let new_grad =
+      Vec2::new(dx, dy).normalize_or_zero() * dynamic_param.gradient_scale;
 
     *grad = ImageGradient(new_grad);
   }
@@ -362,6 +367,57 @@ fn calc_gradient(
 }
 
 fn update_repel_gradient(
+  static_param: Res<StaticParam>,
+  dynamic_param: Res<DynamicParam>,
+  all_trans: Query<&Transform>,
+  mut q: Query<(&Transform, &mut RepelGradient)>,
+  all_circles: Res<TrackedCircles>,
+) {
+  let mut canvas = GrayImage::from_pixel(
+    static_param.width() as u32,
+    static_param.height() as u32,
+    Luma([0]),
+  );
+
+  all_trans.iter_many(&all_circles.circles).for_each(|t| {
+    let [x, y] = static_param.translation_to_pixel(&t.translation);
+    canvas.get_pixel_mut(x, y).0[0] = 255;
+  });
+
+  const GAUSSIAN: [f32; 9] = [
+    1.0 / 16.0,
+    2.0 / 16.0,
+    1.0 / 16.0,
+    2.0 / 16.0,
+    4.0 / 16.0,
+    2.0 / 16.0,
+    1.0 / 16.0,
+    2.0 / 16.0,
+    1.0 / 16.0,
+  ];
+  let canvas = filter3x3(&canvas, &GAUSSIAN);
+  let canvas = filter3x3(&canvas, &GAUSSIAN);
+  let canvas = filter3x3(&canvas, &GAUSSIAN);
+
+  // canvas.save("/tmp/canvas.png").unwrap();
+
+  let grad_h = imageproc::gradients::horizontal_sobel(&canvas);
+  let grad_v = imageproc::gradients::vertical_sobel(&canvas);
+
+  for (trans, mut grad) in q.iter_mut() {
+    let [x, y] = static_param.translation_to_pixel(&trans.translation);
+
+    let dy = grad_h.get_pixel(x, y)[0] as f32;
+    let dx = grad_v.get_pixel(x, y)[0] as f32;
+
+    // dbg!(dx, dy);
+    let new_grad = -Vec2::new(dx, dy).normalize_or_zero();
+    *grad = RepelGradient(new_grad * dynamic_param.repel_coeff);
+  }
+}
+
+#[allow(unused)]
+fn update_repel_gradient_slow(
   dynamic_param: Res<DynamicParam>,
   all_trans: Query<&Transform>,
   mut q: Query<(&Transform, &mut RepelGradient)>,
@@ -399,24 +455,16 @@ fn update_repel_gradient(
   }
 }
 
-fn update_friction(
-  dyn_param: Res<DynamicParam>,
-  mut q: Query<(&Velocity, &mut Friction)>,
-) {
-  for (vel, mut friction) in q.iter_mut() {
-    friction.0 = -vel.0 * dyn_param.friction_coeff;
-  }
-}
-
 fn update_velocity(
   time: Res<Time>,
   dyn_param: Res<DynamicParam>,
-  mut q: Query<(&mut Velocity, &ImageGradient, &RepelGradient, &Friction)>,
+  mut q: Query<(&mut Velocity, &ImageGradient, &RepelGradient)>,
 ) {
-  for (mut vel, grad, grad2, grad3) in q.iter_mut() {
-    let force = grad.0 + grad2.0 + grad3.0;
+  for (mut vel, grad, grad2) in q.iter_mut() {
+    let force = grad.0 + grad2.0;
     vel.0 += force * time.delta_seconds();
     vel.0 = vel.0.clamp_length_max(dyn_param.max_velocity);
+    vel.0 *= (1.0 - dyn_param.friction_coeff).clamp(0.0, 1.0);
   }
 }
 
@@ -465,7 +513,7 @@ impl Default for StaticParam {
     Self {
       size: (500.0, 500.0),
       circle_grid: (100, 100),
-      circle_radius: 1.0,
+      circle_radius: 2.0,
     }
   }
 }
@@ -474,6 +522,7 @@ impl StaticParam {
   fn width(&self) -> f32 {
     self.size.0
   }
+
   fn height(&self) -> f32 {
     self.size.1
   }
@@ -511,14 +560,18 @@ impl StaticParam {
     [x0, x1, y0, y1]
   }
 
-  fn translation_to_pixel(&self, translation: &Vec3) -> [u32; 2] {
+  fn translation_to_pixel_f32(&self, translation: &Vec3) -> [f32; 2] {
     let [x0, x1, y0, y1] = self.boundary();
     let x = (translation.x - x0) / (x1 - x0) * self.width();
     let y = (1.0 - (translation.y - y0) / (y1 - y0)) * self.height();
-    [
-      (x as u32).clamp(0, (x1 - y0) as u32 - 1),
-      (y as u32).clamp(0, (y1 - y0) as u32 - 1),
-    ]
+    [x, y]
+  }
+
+  fn translation_to_pixel(&self, translation: &Vec3) -> [u32; 2] {
+    let [x, y] = self.translation_to_pixel_f32(translation);
+    let x = (x as u32).clamp(0, self.width() as u32 - 1);
+    let y = (y as u32).clamp(0, self.height() as u32 - 1);
+    [x, y]
   }
 }
 
