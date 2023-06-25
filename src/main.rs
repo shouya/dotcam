@@ -31,8 +31,6 @@ use image::{DynamicImage, LumaA};
 use keyde::KdTree;
 use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
 
-use std::simd::{Simd, SimdFloat};
-
 type ScalarField = ImageBuffer<Luma<f32>, Vec<f32>>;
 type VectorField = ImageBuffer<LumaA<f32>, Vec<f32>>;
 
@@ -345,7 +343,7 @@ fn accurate_gradient(image: &ScalarField, n_iter: usize) -> VectorField {
       &image,
       image.width() / 2,
       image.height() / 2,
-      FilterType::Nearest,
+      FilterType::Gaussian,
     );
   }
 
@@ -390,7 +388,7 @@ fn update_repel_gradient(
     2.0 / 16.0,
     1.0 / 16.0,
   ];
-  let canvas = filter_3x3_simd(&canvas, &GAUSSIAN);
+  let canvas = filter_3x3(&canvas, &GAUSSIAN);
   // let canvas = filter3x3(&canvas, &GAUSSIAN);
   // let canvas = filter3x3(&canvas, &GAUSSIAN);
 
@@ -644,8 +642,8 @@ fn gradient(image: &ScalarField) -> VectorField {
     [-1.0, 0.0, 1.0, -2.0, 0.0, 2.0, -1.0, 0.0, 1.0];
   const VERTICAL_KERNEL: [f32; 9] =
     [-1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0];
-  let horz = filter_3x3_simd(image, &HORIZONTAL_KERNEL).into_raw();
-  let vert = filter_3x3_simd(image, &VERTICAL_KERNEL).into_raw();
+  let horz = filter_3x3(image, &HORIZONTAL_KERNEL).into_raw();
+  let vert = filter_3x3(image, &VERTICAL_KERNEL).into_raw();
   let vec = horz
     .into_iter()
     .zip(vert.into_iter())
@@ -655,6 +653,7 @@ fn gradient(image: &ScalarField) -> VectorField {
 }
 
 // apply 3x3 filter to an image. wrap around on edges.
+#[cfg(not(feature = "simd"))]
 fn filter_3x3(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
   // The kernel's input positions relative to the current pixel.
   const TAPS: [(isize, isize); 9] = [
@@ -690,7 +689,10 @@ fn filter_3x3(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
   result
 }
 
-fn filter_3x3_simd(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
+#[cfg(feature = "simd")]
+fn filter_3x3(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
+  use std::simd::{Simd, SimdFloat};
+
   // The kernel's input positions relative to the current pixel.
   const TAPS_X: Simd<i32, 8> = Simd::from_array([-1, 0, 1, -1, 1, -1, 0, 1]);
   const TAPS_Y: Simd<i32, 8> = Simd::from_array([-1, -1, -1, 0, 0, 1, 1, 1]);
@@ -698,8 +700,8 @@ fn filter_3x3_simd(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
   let width = image.width() as isize;
   let height = image.height() as isize;
 
-  let width_simd = Simd::from_array([width as i32; 8]);
-  let height_simd = Simd::from_array([height as i32; 8]);
+  let width_simd = Simd::splat(width as i32);
+  let height_simd = Simd::splat(height as i32);
 
   let kernel_simd =
     Simd::gather_or_default(kernel, Simd::from_array([0, 1, 2, 3, 5, 6, 7, 8]));
@@ -709,11 +711,11 @@ fn filter_3x3_simd(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
   let buffer = image.as_raw().as_slice();
 
   for y in 1..(image.height() - 1) {
-    let ys = Simd::from_array([y as i32; 8]) + TAPS_Y;
+    let ys = Simd::splat(y as i32) + TAPS_Y;
     let indices_base: Simd<usize, _> = (ys * width_simd).cast();
 
     for x in 1..(image.width() - 1) {
-      let xs = Simd::from_array([x as i32; 8]) + TAPS_X;
+      let xs = Simd::splat(x as i32) + TAPS_X;
       let indices = indices_base + xs.cast();
 
       let pixel = image.get_pixel(x, y);
@@ -727,9 +729,9 @@ fn filter_3x3_simd(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
 
   // boundary, requires wraparound
   let calc_boundary_pix = |x, y, buffer, pixel| {
-    let mut ys = Simd::from_array([y as i32; 8]) + TAPS_Y;
+    let mut ys = Simd::splat(y as i32) + TAPS_Y;
     ys = (ys % height_simd + height_simd) % height_simd;
-    let mut xs = Simd::from_array([x as i32; 8]) + TAPS_X;
+    let mut xs = Simd::splat(x as i32) + TAPS_X;
     xs = (xs % width_simd + width_simd) % width_simd;
     let indices = (xs + ys * width_simd).cast();
     let pixels: Simd<f32, 8> = Simd::gather_or_default(buffer, indices);

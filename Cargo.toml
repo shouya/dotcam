@@ -27,3 +27,7 @@ keyde = "0.2.4"
 nokhwa = { git = "https://github.com/l1npengtul/nokhwa.git", branch = "0.10", features = ["input-native", "output-threaded"] }
 # nokhwa = { version = "0.10.4", features = ["input-native", "output-threaded"] }
 rand = "0.8.5"
+
+[features]
+simd = []
+default = ["simd"]
