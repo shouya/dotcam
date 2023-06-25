@@ -18,15 +18,18 @@ use bevy_inspector_egui::{
   InspectorOptions,
 };
 use crossbeam::channel::{self, Receiver};
-use image::DynamicImage;
-use image::GenericImageView;
 use image::{
   codecs::jpeg::JpegDecoder,
   imageops::{filter3x3, resize, FilterType},
-  GrayImage, ImageBuffer, ImageDecoder, Luma, Pixel,
+  GrayImage, ImageBuffer, ImageDecoder, Luma,
 };
+use image::{DynamicImage, LumaA};
+
 use keyde::KdTree;
 use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
+
+type ScalarField = ImageBuffer<Luma<f32>, Vec<f32>>;
+type VectorField = ImageBuffer<LumaA<f32>, Vec<f32>>;
 
 #[derive(Component)]
 struct GameCamera;
@@ -104,7 +107,7 @@ impl Default for DynamicParam {
   fn default() -> Self {
     Self {
       friction_coeff: 0.5,
-      repel_coeff: 1000.0,
+      repel_coeff: 10.0,
       gradient_scale: 10.0,
       max_velocity: 1000.0,
     }
@@ -306,7 +309,8 @@ fn update_image_gradient(
 ) {
   let luma_grid = &luma_grid.0;
 
-  let [horizontal_gradient, vertical_gradient] = calc_gradient(luma_grid, 4);
+  let [horizontal_gradient, vertical_gradient] =
+    calc_image_gradient(luma_grid, 4);
 
   for (trans, mut grad) in q.iter_mut() {
     let [x, y] = param.translation_to_pixel(&trans.translation);
@@ -320,7 +324,7 @@ fn update_image_gradient(
   }
 }
 
-fn calc_gradient(
+fn calc_image_gradient(
   image: &GrayImage,
   n_iter: usize,
 ) -> [ImageBuffer<Luma<i16>, Vec<i16>>; 2] {
@@ -373,15 +377,12 @@ fn update_repel_gradient(
   mut q: Query<(&Transform, &mut RepelGradient)>,
   all_circles: Res<TrackedCircles>,
 ) {
-  let mut canvas = GrayImage::from_pixel(
-    static_param.width() as u32,
-    static_param.height() as u32,
-    Luma([0]),
-  );
+  let mut canvas =
+    new_scalar_field(static_param.width() as u32, static_param.height() as u32);
 
   all_trans.iter_many(&all_circles.circles).for_each(|t| {
     let [x, y] = static_param.translation_to_pixel(&t.translation);
-    canvas.get_pixel_mut(x, y).0[0] = 255;
+    canvas[(x, y)].0[0] -= 0.5;
   });
 
   const GAUSSIAN: [f32; 9] = [
@@ -395,25 +396,37 @@ fn update_repel_gradient(
     2.0 / 16.0,
     1.0 / 16.0,
   ];
-  let canvas = filter3x3(&canvas, &GAUSSIAN);
-  let canvas = filter3x3(&canvas, &GAUSSIAN);
-  let canvas = filter3x3(&canvas, &GAUSSIAN);
+  let canvas = filter_3x3(&canvas, &GAUSSIAN);
+  // let canvas = filter3x3(&canvas, &GAUSSIAN);
+  // let canvas = filter3x3(&canvas, &GAUSSIAN);
 
   // canvas.save("/tmp/canvas.png").unwrap();
 
-  let grad_h = imageproc::gradients::horizontal_sobel(&canvas);
-  let grad_v = imageproc::gradients::vertical_sobel(&canvas);
+  let gradient = gradient(&canvas);
+
+  // let (a, b) = split_vector_field(&gradient);
+  // scalar_field_to_image(&a).save("/tmp/grad_x.png").unwrap();
+  // scalar_field_to_image(&b).save("/tmp/grad_y.png").unwrap();
+
+  let mut tot_dx = 0.0;
+  let mut tot_dy = 0.0;
 
   for (trans, mut grad) in q.iter_mut() {
     let [x, y] = static_param.translation_to_pixel(&trans.translation);
 
-    let dy = grad_h.get_pixel(x, y)[0] as f32;
-    let dx = grad_v.get_pixel(x, y)[0] as f32;
+    let grad_at_point = gradient.get_pixel(x, y).0;
+    let dx = grad_at_point[1];
+    let dy = grad_at_point[0];
+
+    tot_dx += dx;
+    tot_dy += dy;
 
     // dbg!(dx, dy);
-    let new_grad = -Vec2::new(dx, dy).normalize_or_zero();
+    let new_grad = -Vec2::new(dx, dy);
     *grad = RepelGradient(new_grad * dynamic_param.repel_coeff);
   }
+
+  dbg!(tot_dx, tot_dy);
 }
 
 #[allow(unused)]
@@ -575,7 +588,18 @@ impl StaticParam {
   }
 }
 
-fn wrap_around(mut v: f32, min: f32, max: f32) -> f32 {
+fn wrap_around<
+  N: std::ops::Sub<Output = M>
+    + PartialOrd
+    + std::ops::AddAssign<M>
+    + std::ops::SubAssign<M>
+    + Copy,
+  M: Copy,
+>(
+  mut v: N,
+  min: N,
+  max: N,
+) -> N {
   if v > min && v < max {
     return v;
   }
@@ -588,4 +612,93 @@ fn wrap_around(mut v: f32, min: f32, max: f32) -> f32 {
     v -= range;
   }
   v
+}
+
+fn new_scalar_field(w: u32, h: u32) -> ScalarField {
+  ImageBuffer::new(w, h)
+}
+
+#[allow(unused)]
+fn to_scalar_field(image: &GrayImage) -> ScalarField {
+  let (w, h) = image.dimensions();
+  let vec = image.as_raw().iter().map(|&v| v as f32 / 255.0).collect();
+  ImageBuffer::from_vec(w, h, vec).unwrap()
+}
+
+fn scalar_field_to_image(buffer: &ScalarField) -> GrayImage {
+  let width = buffer.width();
+  let height = buffer.height();
+
+  let pixels = buffer
+    .pixels()
+    .map(|p| (p[0] * 255.0).clamp(0.0, 255.0) as u8)
+    .collect();
+
+  ImageBuffer::from_raw(width, height, pixels).unwrap()
+}
+
+fn split_vector_field(vec_field: &VectorField) -> (ScalarField, ScalarField) {
+  let width = vec_field.width();
+  let height = vec_field.height();
+
+  let mut left = new_scalar_field(width, height);
+  let mut right = new_scalar_field(width, height);
+
+  for (x, y, pixel) in vec_field.enumerate_pixels() {
+    left.put_pixel(x, y, Luma([pixel[0]]));
+    right.put_pixel(x, y, Luma([pixel[1]]));
+  }
+
+  (left, right)
+}
+
+fn gradient(image: &ScalarField) -> VectorField {
+  const HORIZONTAL_KERNEL: [f32; 9] =
+    [-1.0, 0.0, 1.0, -2.0, 0.0, 2.0, -1.0, 0.0, 1.0];
+  const VERTICAL_KERNEL: [f32; 9] =
+    [-1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0];
+  let horz = filter_3x3(image, &HORIZONTAL_KERNEL).into_raw();
+  let vert = filter_3x3(image, &VERTICAL_KERNEL).into_raw();
+  let vec = horz
+    .into_iter()
+    .zip(vert.into_iter())
+    .flat_map(|(x, y)| [x, y])
+    .collect();
+  ImageBuffer::from_vec(image.width(), image.height(), vec).unwrap()
+}
+
+fn filter_3x3(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
+  // The kernel's input positions relative to the current pixel.
+  const TAPS: [(isize, isize); 9] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (0, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+  ];
+
+  // apply 3x3 filter to an image. wrap around on edges.
+  let width = image.width();
+  let height = image.height();
+
+  let mut result = new_scalar_field(width, height);
+
+  for (x, y, _pixel) in image.enumerate_pixels() {
+    let mut sum = 0.0;
+
+    for (k, (dx, dy)) in kernel.iter().zip(TAPS.iter()) {
+      let x = wrap_around(x as isize + dx, 0, width as isize - 1) as u32;
+      let y = wrap_around(y as isize + dy, 0, height as isize - 1) as u32;
+      let pixel = image.get_pixel(x, y)[0];
+      sum += pixel as f32 * k;
+    }
+
+    result.put_pixel(x, y, Luma([sum]));
+  }
+
+  result
 }
