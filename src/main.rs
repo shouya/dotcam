@@ -1,4 +1,5 @@
 #![feature(portable_simd)]
+#![feature(generic_arg_infer)]
 
 use bevy::{
   diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
@@ -30,7 +31,7 @@ use image::{DynamicImage, LumaA};
 use keyde::KdTree;
 use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
 
-use std::simd::{self, Simd, SimdFloat};
+use std::simd::{Simd, SimdFloat};
 
 type ScalarField = ImageBuffer<Luma<f32>, Vec<f32>>;
 type VectorField = ImageBuffer<LumaA<f32>, Vec<f32>>;
@@ -311,38 +312,29 @@ fn update_image_gradient(
   luma_grid: Res<LumaGrid>,
   param: Res<StaticParam>,
 ) {
-  let luma_grid = &luma_grid.0;
+  let luma_grid = to_scalar_field(&luma_grid.0);
 
-  let [horizontal_gradient, vertical_gradient] =
-    calc_image_gradient(luma_grid, 4);
+  let gradient = accurate_gradient(&luma_grid, 4);
 
   for (trans, mut grad) in q.iter_mut() {
     let [x, y] = param.translation_to_pixel(&trans.translation);
-    let dx = horizontal_gradient.get_pixel(x, y)[0] as f32;
-    let dy = vertical_gradient.get_pixel(x, y)[0] as f32;
+    let g = gradient.get_pixel(x, y);
+    let dx = g[0];
+    let dy = g[1];
 
-    let new_grad =
-      Vec2::new(dx, dy).normalize_or_zero() * dynamic_param.gradient_scale;
+    let new_grad = Vec2::new(dx, dy) * dynamic_param.gradient_scale;
 
     *grad = ImageGradient(new_grad);
   }
 }
 
-fn calc_image_gradient(
-  image: &GrayImage,
-  n_iter: usize,
-) -> [ImageBuffer<Luma<i16>, Vec<i16>>; 2] {
+fn accurate_gradient(image: &ScalarField, n_iter: usize) -> VectorField {
   let (w, h) = (image.width(), image.height());
 
-  let mut horizontal_gradients = Vec::new();
-  let mut vertical_gradients = Vec::new();
+  let mut grads = Vec::new();
   let mut image = image.clone();
   for i in 0..n_iter {
-    let horz = imageproc::gradients::horizontal_sobel(&image);
-    let vert = imageproc::gradients::vertical_sobel(&image);
-
-    horizontal_gradients.push(horz);
-    vertical_gradients.push(vert);
+    grads.push(gradient(&image));
 
     if i == n_iter - 1 {
       // save a resize
@@ -357,21 +349,19 @@ fn calc_image_gradient(
     );
   }
 
-  let avg_gradient = |grads: &Vec<ImageBuffer<Luma<i16>, Vec<i16>>>| {
-    ImageBuffer::from_fn(w, h, |x, y| {
-      let mut grad = 0;
-      (0..n_iter).for_each(|i| {
-        let new_x = (x / 2_u32.pow(i as u32)).min(grads[i].width() - 1);
-        let new_y = (y / 2_u32.pow(i as u32)).min(grads[i].height() - 1);
-        grad += grads[i].get_pixel(new_x, new_y)[0];
-      });
-      Luma([grad / n_iter as i16])
-    })
-  };
-  let horizontal_gradient = avg_gradient(&horizontal_gradients);
-  let vertical_gradient = avg_gradient(&vertical_gradients);
+  ImageBuffer::from_fn(w, h, |x, y| {
+    let mut grad = [0.0, 0.0];
+    (0..n_iter).for_each(|i| {
+      let new_x = (x / 2_u32.pow(i as u32)).min(grads[i].width() - 1);
+      let new_y = (y / 2_u32.pow(i as u32)).min(grads[i].height() - 1);
+      grad[0] += grads[i].get_pixel(new_x, new_y)[0];
+      grad[1] += grads[i].get_pixel(new_x, new_y)[0];
+    });
 
-  [horizontal_gradient, vertical_gradient]
+    grad[0] /= n_iter as f32;
+    grad[1] /= n_iter as f32;
+    LumaA(grad)
+  })
 }
 
 fn update_repel_gradient(
@@ -412,9 +402,6 @@ fn update_repel_gradient(
   // scalar_field_to_image(&a).save("/tmp/grad_x.png").unwrap();
   // scalar_field_to_image(&b).save("/tmp/grad_y.png").unwrap();
 
-  let mut tot_dx = 0.0;
-  let mut tot_dy = 0.0;
-
   for (trans, mut grad) in q.iter_mut() {
     let [x, y] = static_param.translation_to_pixel(&trans.translation);
 
@@ -422,15 +409,10 @@ fn update_repel_gradient(
     let dx = grad_at_point[1];
     let dy = grad_at_point[0];
 
-    tot_dx += dx;
-    tot_dy += dy;
-
     // dbg!(dx, dy);
     let new_grad = -Vec2::new(dx, dy);
     *grad = RepelGradient(new_grad * dynamic_param.repel_coeff);
   }
-
-  dbg!(tot_dx, tot_dy);
 }
 
 #[allow(unused)]
@@ -622,13 +604,13 @@ fn new_scalar_field(w: u32, h: u32) -> ScalarField {
   ImageBuffer::new(w, h)
 }
 
-#[allow(unused)]
 fn to_scalar_field(image: &GrayImage) -> ScalarField {
   let (w, h) = image.dimensions();
   let vec = image.as_raw().iter().map(|&v| v as f32 / 255.0).collect();
   ImageBuffer::from_vec(w, h, vec).unwrap()
 }
 
+#[allow(unused)]
 fn scalar_field_to_image(buffer: &ScalarField) -> GrayImage {
   let width = buffer.width();
   let height = buffer.height();
@@ -641,6 +623,7 @@ fn scalar_field_to_image(buffer: &ScalarField) -> GrayImage {
   ImageBuffer::from_raw(width, height, pixels).unwrap()
 }
 
+#[allow(unused)]
 fn split_vector_field(vec_field: &VectorField) -> (ScalarField, ScalarField) {
   let width = vec_field.width();
   let height = vec_field.height();
@@ -725,19 +708,55 @@ fn filter_3x3_simd(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
   let mut result = new_scalar_field(width as u32, height as u32);
   let buffer = image.as_raw().as_slice();
 
-  for (x, y, pixel) in image.enumerate_pixels() {
-    let mut xs = Simd::from_array([x as i32; 8]) + TAPS_X;
+  for y in 1..(image.height() - 1) {
+    let ys = Simd::from_array([y as i32; 8]) + TAPS_Y;
+    let indices_base: Simd<usize, _> = (ys * width_simd).cast();
+
+    for x in 1..(image.width() - 1) {
+      let xs = Simd::from_array([x as i32; 8]) + TAPS_X;
+      let indices = indices_base + xs.cast();
+
+      let pixel = image.get_pixel(x, y);
+      let pixels: Simd<f32, 8> = Simd::gather_or_default(buffer, indices);
+      let sum =
+        (pixels * kernel_simd).reduce_sum() + pixel.0[0] * kernel_center;
+
+      result.put_pixel(x, y, Luma([sum]));
+    }
+  }
+
+  // boundary, requires wraparound
+  let calc_boundary_pix = |x, y, buffer, pixel| {
     let mut ys = Simd::from_array([y as i32; 8]) + TAPS_Y;
-
-    xs = (xs % width_simd + width_simd) % width_simd;
     ys = (ys % height_simd + height_simd) % height_simd;
-
+    let mut xs = Simd::from_array([x as i32; 8]) + TAPS_X;
+    xs = (xs % width_simd + width_simd) % width_simd;
     let indices = (xs + ys * width_simd).cast();
-
     let pixels: Simd<f32, 8> = Simd::gather_or_default(buffer, indices);
-    let sum = (pixels * kernel_simd).reduce_sum() + pixel.0[0] * kernel_center;
+    (pixels * kernel_simd).reduce_sum() + pixel * kernel_center
+  };
 
-    result.put_pixel(x, y, Luma([sum]));
+  // top and bottom
+  for x in 1..(image.width() - 1) {
+    let pixel_top = image.get_pixel(x, 0)[0];
+    let sum_top = calc_boundary_pix(x, 0, buffer, pixel_top);
+    result.put_pixel(x, 0, Luma([sum_top]));
+
+    let pixel_bottom = image.get_pixel(x, image.height() - 1)[0];
+    let sum_bottom =
+      calc_boundary_pix(x, image.height() - 1, buffer, pixel_bottom);
+    result.put_pixel(x, image.height() - 1, Luma([sum_bottom]));
+  }
+
+  // left and right
+  for y in 2..(image.height() - 2) {
+    let pixel_left = image.get_pixel(0, y)[0];
+    let sum_left = calc_boundary_pix(0, y, buffer, pixel_left);
+    result.put_pixel(0, y, Luma([sum_left]));
+
+    let pixel_right = image.get_pixel(image.width() - 1, y)[0];
+    let sum_right = calc_boundary_pix(image.width(), y, buffer, pixel_right);
+    result.put_pixel(image.width() - 1, y, Luma([sum_right]));
   }
 
   result
