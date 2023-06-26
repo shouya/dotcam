@@ -3,7 +3,6 @@
 
 use bevy::{
   diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
-  math::Vec3Swizzles,
   prelude::{
     default, on_event, resource_changed, resource_exists, shape, App, Assets,
     Bundle, Camera2d, Camera2dBundle, Color, Commands, Component, Condition,
@@ -28,7 +27,6 @@ use image::{
   GrayImage, ImageBuffer, ImageDecoder, Luma,
 };
 use image::{DynamicImage, LumaA};
-use keyde::KdTree;
 use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
 
 type ScalarField = ImageBuffer<Luma<f32>, Vec<f32>>;
@@ -96,10 +94,10 @@ struct StaticParam {
 #[derive(Resource, Reflect, InspectorOptions)]
 #[reflect(Resource, InspectorOptions)]
 struct DynamicParam {
-  #[inspector(min = 0.0, max = 100.0)]
-  pub friction_coeff: f32,
   #[inspector(min = 0.0, max = 1000.0)]
   pub repel_coeff: f32,
+  #[inspector(min = 0.0, max = 100.0)]
+  pub friction_coeff: f32,
   #[inspector(min = -1000.0, max = 1000.0)]
   pub gradient_scale: f32,
   #[inspector(min = 0.0, max = 10000.0)]
@@ -109,10 +107,10 @@ struct DynamicParam {
 impl Default for DynamicParam {
   fn default() -> Self {
     Self {
-      friction_coeff: 0.5,
-      repel_coeff: 10.0,
-      gradient_scale: 10.0,
-      max_velocity: 1000.0,
+      friction_coeff: 0.2,
+      repel_coeff: 400.0,
+      gradient_scale: 100.0,
+      max_velocity: 100.0,
     }
   }
 }
@@ -312,7 +310,7 @@ fn update_image_gradient(
 ) {
   let luma_grid = to_scalar_field(&luma_grid.0);
 
-  let gradient = accurate_gradient(&luma_grid, 4);
+  let gradient = accurate_gradient(&luma_grid, 2);
 
   for (trans, mut grad) in q.iter_mut() {
     let [x, y] = param.translation_to_pixel(&trans.translation);
@@ -329,36 +327,24 @@ fn update_image_gradient(
 fn accurate_gradient(image: &ScalarField, n_iter: usize) -> VectorField {
   let (w, h) = (image.width(), image.height());
 
-  let mut grads = Vec::new();
-  let mut image = image.clone();
-  for i in 0..n_iter {
-    grads.push(gradient(&image));
-
-    if i == n_iter - 1 {
-      // save a resize
-      break;
-    }
-
-    image = resize(
-      &image,
-      image.width() / 2,
-      image.height() / 2,
-      FilterType::Gaussian,
-    );
-  }
+  let grads = (0..n_iter)
+    .scan(image.clone(), |img, _| {
+      let grad = gradient(img);
+      *img =
+        resize(img, img.width() / 2, img.height() / 2, FilterType::Triangle);
+      Some(grad)
+    })
+    .collect::<Vec<_>>();
 
   ImageBuffer::from_fn(w, h, |x, y| {
-    let mut grad = [0.0, 0.0];
-    (0..n_iter).for_each(|i| {
-      let new_x = (x / 2_u32.pow(i as u32)).min(grads[i].width() - 1);
-      let new_y = (y / 2_u32.pow(i as u32)).min(grads[i].height() - 1);
-      grad[0] += grads[i].get_pixel(new_x, new_y)[0];
-      grad[1] += grads[i].get_pixel(new_x, new_y)[0];
+    let grad = (0..n_iter).fold([0.0f32; 2], |acc, i| {
+      let new_x = (x >> i).min(grads[i].width() - 1);
+      let new_y = (y >> i).min(grads[i].height() - 1);
+      let pixel = grads[i].get_pixel(new_x, new_y);
+      [acc[0] + pixel[0], acc[1] + pixel[1]]
     });
 
-    grad[0] /= n_iter as f32;
-    grad[1] /= n_iter as f32;
-    LumaA(grad)
+    LumaA([grad[0] / n_iter as f32, grad[1] / n_iter as f32])
   })
 }
 
@@ -374,81 +360,20 @@ fn update_repel_gradient(
 
   all_trans.iter_many(&all_circles.circles).for_each(|t| {
     let [x, y] = static_param.translation_to_pixel(&t.translation);
-    canvas[(x, y)].0[0] -= 0.5;
+    canvas[(x, y)].0[0] += 0.5;
   });
 
-  const GAUSSIAN: [f32; 9] = [
-    1.0 / 16.0,
-    2.0 / 16.0,
-    1.0 / 16.0,
-    2.0 / 16.0,
-    4.0 / 16.0,
-    2.0 / 16.0,
-    1.0 / 16.0,
-    2.0 / 16.0,
-    1.0 / 16.0,
-  ];
-  let canvas = filter_3x3(&canvas, &GAUSSIAN);
-  // let canvas = filter3x3(&canvas, &GAUSSIAN);
-  // let canvas = filter3x3(&canvas, &GAUSSIAN);
-
-  // canvas.save("/tmp/canvas.png").unwrap();
-
-  let gradient = gradient(&canvas);
-
-  // let (a, b) = split_vector_field(&gradient);
-  // scalar_field_to_image(&a).save("/tmp/grad_x.png").unwrap();
-  // scalar_field_to_image(&b).save("/tmp/grad_y.png").unwrap();
+  let gradient = accurate_gradient(&canvas, 2);
 
   for (trans, mut grad) in q.iter_mut() {
     let [x, y] = static_param.translation_to_pixel(&trans.translation);
 
     let grad_at_point = gradient.get_pixel(x, y).0;
-    let dx = grad_at_point[1];
-    let dy = grad_at_point[0];
+    let dx = grad_at_point[0];
+    let dy = grad_at_point[1];
 
-    // dbg!(dx, dy);
     let new_grad = -Vec2::new(dx, dy);
     *grad = RepelGradient(new_grad * dynamic_param.repel_coeff);
-  }
-}
-
-#[allow(unused)]
-fn update_repel_gradient_slow(
-  dynamic_param: Res<DynamicParam>,
-  all_trans: Query<&Transform>,
-  mut q: Query<(&Transform, &mut RepelGradient)>,
-  all_circles: Res<TrackedCircles>,
-) {
-  const RADIUS: f32 = 4.0;
-
-  let points: Vec<[f32; 2]> = all_trans
-    .iter_many(&all_circles.circles)
-    .map(|t| t.translation)
-    .map(|t| [t.x, t.y])
-    .collect();
-
-  let kdtree = KdTree::from_points(&points);
-
-  for (trans, mut grad) in q.iter_mut() {
-    let mut new_grad = Vec2::ZERO;
-    let trans = trans.translation;
-    let point = [trans.x, trans.y];
-
-    for neigh_id in kdtree.point_indices_within(point, RADIUS) {
-      let entity = all_circles.circles[neigh_id];
-      let neigh_trans = all_trans.get(entity).unwrap().translation;
-
-      let dist_sq = trans.distance_squared(neigh_trans);
-      if dist_sq < 0.0001 {
-        continue;
-      }
-
-      let force = (trans - neigh_trans).normalize() / dist_sq;
-      new_grad += force.xy();
-    }
-
-    grad.0 = new_grad * dynamic_param.repel_coeff;
   }
 }
 
@@ -508,7 +433,7 @@ fn stop_webcam(mut _webcam: ResMut<CameraDev>) {
 impl Default for StaticParam {
   fn default() -> Self {
     Self {
-      size: (500.0, 500.0),
+      size: (512.0, 512.0),
       circle_grid: (100, 100),
       circle_radius: 2.0,
     }
@@ -757,7 +682,8 @@ fn filter_3x3(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
     result.put_pixel(0, y, Luma([sum_left]));
 
     let pixel_right = image.get_pixel(image.width() - 1, y)[0];
-    let sum_right = calc_boundary_pix(image.width(), y, buffer, pixel_right);
+    let sum_right =
+      calc_boundary_pix(image.width() - 1, y, buffer, pixel_right);
     result.put_pixel(image.width() - 1, y, Luma([sum_right]));
   }
 
