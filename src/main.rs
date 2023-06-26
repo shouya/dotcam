@@ -68,7 +68,7 @@ struct CircleBundle {
   #[bundle]
   mesh: MaterialMesh2dBundle<ColorMaterial>,
   velocity: Velocity,
-  image_grad: ImageGradient,
+  image_gradient: ImageGradient,
   repel_gradient: RepelGradient,
   friction: Friction,
 }
@@ -107,10 +107,10 @@ struct DynamicParam {
 impl Default for DynamicParam {
   fn default() -> Self {
     Self {
-      friction_coeff: 0.1,
+      friction_coeff: 0.2,
       repel_coeff: 400.0,
-      gradient_scale: 200.0,
-      max_velocity: 400.0,
+      gradient_scale: -200.0,
+      max_velocity: 50.0,
     }
   }
 }
@@ -367,7 +367,7 @@ fn update_repel_gradient(
     canvas[(x, y)].0[0] += 0.5;
   });
 
-  let gradient = accurate_gradient(&canvas, 5);
+  let gradient = accurate_gradient(&canvas, 6);
 
   for (trans, mut grad) in q.iter_mut() {
     let [x, y] = static_param.translation_to_pixel(&trans.translation);
