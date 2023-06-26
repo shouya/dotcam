@@ -107,10 +107,10 @@ struct DynamicParam {
 impl Default for DynamicParam {
   fn default() -> Self {
     Self {
-      friction_coeff: 0.2,
+      friction_coeff: 0.1,
       repel_coeff: 400.0,
-      gradient_scale: 100.0,
-      max_velocity: 100.0,
+      gradient_scale: 200.0,
+      max_velocity: 400.0,
     }
   }
 }
@@ -310,13 +310,13 @@ fn update_image_gradient(
 ) {
   let luma_grid = to_scalar_field(&luma_grid.0);
 
-  let gradient = accurate_gradient(&luma_grid, 2);
+  let gradient = accurate_gradient(&luma_grid, 1);
 
   for (trans, mut grad) in q.iter_mut() {
     let [x, y] = param.translation_to_pixel(&trans.translation);
     let g = gradient.get_pixel(x, y);
     let dx = g[0];
-    let dy = g[1];
+    let dy = -g[1];
 
     let new_grad = Vec2::new(dx, dy) * dynamic_param.gradient_scale;
 
@@ -330,8 +330,12 @@ fn accurate_gradient(image: &ScalarField, n_iter: usize) -> VectorField {
   let grads = (0..n_iter)
     .scan(image.clone(), |img, _| {
       let grad = gradient(img);
-      *img =
-        resize(img, img.width() / 2, img.height() / 2, FilterType::Triangle);
+      *img = resize(
+        img,
+        img.width() / 2,
+        img.height() / 2,
+        FilterType::CatmullRom,
+      );
       Some(grad)
     })
     .collect::<Vec<_>>();
@@ -363,14 +367,14 @@ fn update_repel_gradient(
     canvas[(x, y)].0[0] += 0.5;
   });
 
-  let gradient = accurate_gradient(&canvas, 2);
+  let gradient = accurate_gradient(&canvas, 5);
 
   for (trans, mut grad) in q.iter_mut() {
     let [x, y] = static_param.translation_to_pixel(&trans.translation);
 
     let grad_at_point = gradient.get_pixel(x, y).0;
     let dx = grad_at_point[0];
-    let dy = grad_at_point[1];
+    let dy = -grad_at_point[1];
 
     let new_grad = -Vec2::new(dx, dy);
     *grad = RepelGradient(new_grad * dynamic_param.repel_coeff);
@@ -564,9 +568,9 @@ fn split_vector_field(vec_field: &VectorField) -> (ScalarField, ScalarField) {
 
 fn gradient(image: &ScalarField) -> VectorField {
   const HORIZONTAL_KERNEL: [f32; 9] =
-    [-1.0, 0.0, 1.0, -2.0, 0.0, 2.0, -1.0, 0.0, 1.0];
+    [-3.0, 0.0, 3.0, -10.0, 0.0, 10.0, -3.0, 0.0, 3.0];
   const VERTICAL_KERNEL: [f32; 9] =
-    [-1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0];
+    [-3.0, -10.0, -3.0, 0.0, 0.0, 0.0, 3.0, 10.0, 3.0];
   let horz = filter_3x3(image, &HORIZONTAL_KERNEL).into_raw();
   let vert = filter_3x3(image, &VERTICAL_KERNEL).into_raw();
   let vec = horz
@@ -655,9 +659,9 @@ fn filter_3x3(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
   // boundary, requires wraparound
   let calc_boundary_pix = |x, y, buffer, pixel| {
     let mut ys = Simd::splat(y as i32) + TAPS_Y;
-    ys = (ys % height_simd + height_simd) % height_simd;
+    ys = (ys + height_simd) % height_simd;
     let mut xs = Simd::splat(x as i32) + TAPS_X;
-    xs = (xs % width_simd + width_simd) % width_simd;
+    xs = (xs + width_simd) % width_simd;
     let indices = (xs + ys * width_simd).cast();
     let pixels: Simd<f32, 8> = Simd::gather_or_default(buffer, indices);
     (pixels * kernel_simd).reduce_sum() + pixel * kernel_center
@@ -701,8 +705,7 @@ fn filter_3x3(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
     (-1, 1),
     (0, 1),
     (1, 1),
-  ]
-  .to;
+  ];
 
   let width = image.width() as isize;
   let height = image.height() as isize;
