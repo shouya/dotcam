@@ -6,9 +6,9 @@ use bevy::{
   prelude::{
     default, on_event, resource_changed, resource_exists, shape, App, Assets,
     Bundle, Camera2d, Camera2dBundle, Color, Commands, Component, Condition,
-    DefaultPlugins, Entity, Handle, Image, In, IntoPipeSystem,
+    DefaultPlugins, Entity, FromWorld, Handle, Image, In, IntoPipeSystem,
     IntoSystemConfig, Mesh, PluginGroup, Query, Reflect, ReflectResource, Res,
-    ResMut, Resource, Transform, Vec2, Vec3,
+    ResMut, Resource, Transform, Vec2, Vec3, With, World,
   },
   sprite::{ColorMaterial, MaterialMesh2dBundle},
   time::Time,
@@ -43,34 +43,26 @@ struct CameraDev {
 }
 
 #[derive(Resource, Clone, Default)]
-struct LumaGrid(GrayImage);
+struct CameraStream(GrayImage);
 
 #[derive(Resource, Clone, Default)]
-struct LumaGridPreview(Handle<Image>);
-
-#[derive(Resource, Clone, Default)]
-struct Preview1(Handle<Image>);
+struct CameraStreamPreview(Handle<Image>);
 
 #[derive(Component, Clone, Copy, Default)]
 struct Velocity(Vec2);
 
 #[derive(Component, Clone, Copy, Default)]
-struct ImageGradient(Vec2);
+struct Force(Vec2);
 
-#[derive(Component, Clone, Copy, Default)]
-struct RepelGradient(Vec2);
-
-#[derive(Component, Clone, Copy, Default)]
-struct Friction(Vec2);
+#[derive(Resource, Clone)]
+struct ForceField(VectorField);
 
 #[derive(Default, Resource, Bundle, Clone)]
 struct CircleBundle {
   #[bundle]
   mesh: MaterialMesh2dBundle<ColorMaterial>,
   velocity: Velocity,
-  image_gradient: ImageGradient,
-  repel_gradient: RepelGradient,
-  friction: Friction,
+  force: Force,
 }
 
 #[derive(Default, Resource, Clone, Reflect)]
@@ -94,23 +86,20 @@ struct StaticParam {
 #[derive(Resource, Reflect, InspectorOptions)]
 #[reflect(Resource, InspectorOptions)]
 struct DynamicParam {
-  #[inspector(min = 0.0, max = 1000.0)]
-  pub repel_coeff: f32,
   #[inspector(min = 0.0, max = 100.0)]
-  pub friction_coeff: f32,
+  pub friction: f32,
+  #[inspector(min = 0.0, max = 1000.0)]
+  pub repel_strength: f32,
   #[inspector(min = -1000.0, max = 1000.0)]
-  pub gradient_scale: f32,
-  #[inspector(min = 0.0, max = 10000.0)]
-  pub max_velocity: f32,
+  pub gradient_strength: f32,
 }
 
 impl Default for DynamicParam {
   fn default() -> Self {
     Self {
-      friction_coeff: 0.2,
-      repel_coeff: 400.0,
-      gradient_scale: -200.0,
-      max_velocity: 50.0,
+      friction: 0.2,
+      repel_strength: 400.0,
+      gradient_strength: -200.0,
     }
   }
 }
@@ -132,6 +121,7 @@ fn main() {
     .insert_resource(static_param)
     .init_resource::<DynamicParam>()
     .init_resource::<TrackedCircles>()
+    .init_resource::<ForceField>()
     .add_plugin(ResourceInspectorPlugin::<DynamicParam>::default())
     .add_plugin(FrameTimeDiagnosticsPlugin)
     .add_plugin(LogDiagnosticsPlugin::default())
@@ -139,16 +129,20 @@ fn main() {
     .add_startup_system(setup_camera)
     .add_startup_system(setup_circle_bundle.pipe(spawn_circles))
     .add_system(save_camera_output.run_if(resource_exists::<CameraDev>()))
-    .add_system(update_image_gradient.run_if(
-      resource_exists::<LumaGrid>().and_then(resource_changed::<LumaGrid>()),
-    ))
+    .add_system(
+      update_image_gradient.run_if(
+        resource_exists::<CameraStream>()
+          .and_then(resource_changed::<CameraStream>()),
+      ),
+    )
     .add_system(update_repel_gradient)
     .add_system(
-      update_velocity
+      update_force
         .after(update_image_gradient)
         .after(update_repel_gradient),
     )
-    .add_system(inspect_buffer.run_if(resource_exists::<LumaGridPreview>()))
+    .add_system(update_velocity.after(update_force))
+    .add_system(inspect_buffer.run_if(resource_exists::<CameraStreamPreview>()))
     .add_system(physics_velocity_system)
     .add_system(stop_webcam.run_if(on_event::<WindowCloseRequested>()))
     .run();
@@ -220,8 +214,8 @@ fn camera_buffer_to_image(
 fn save_camera_output(
   mut commands: Commands,
   camera_dev: Res<CameraDev>,
-  mut luma_grid: Option<ResMut<LumaGrid>>,
-  mut preview: Option<ResMut<LumaGridPreview>>,
+  mut luma_grid: Option<ResMut<CameraStream>>,
+  mut preview: Option<ResMut<CameraStreamPreview>>,
   mut images: ResMut<Assets<Image>>,
 ) {
   let receiver = &camera_dev.receiver;
@@ -248,13 +242,13 @@ fn save_camera_output(
       format,
     );
     let handle = images.add(bevy_image);
-    commands.insert_resource(LumaGridPreview(handle));
+    commands.insert_resource(CameraStreamPreview(handle));
   }
 
   if let Some(luma_grid) = luma_grid.as_mut() {
     luma_grid.0.copy_from_slice(image.as_bytes());
   } else {
-    commands.insert_resource(LumaGrid(image.into_luma8()));
+    commands.insert_resource(CameraStream(image.into_luma8()));
   }
 }
 
@@ -304,23 +298,26 @@ fn spawn_circles(
 
 fn update_image_gradient(
   dynamic_param: Res<DynamicParam>,
-  mut q: Query<(&Transform, &mut ImageGradient)>,
-  luma_grid: Res<LumaGrid>,
+  mut field: ResMut<ForceField>,
+  mut q: Query<&Transform, With<Velocity>>,
+  luma_grid: Res<CameraStream>,
   param: Res<StaticParam>,
 ) {
   let luma_grid = to_scalar_field(&luma_grid.0);
 
   let gradient = accurate_gradient(&luma_grid, 1);
 
-  for (trans, mut grad) in q.iter_mut() {
+  for trans in q.iter_mut() {
     let [x, y] = param.translation_to_pixel(&trans.translation);
     let g = gradient.get_pixel(x, y);
     let dx = g[0];
     let dy = -g[1];
 
-    let new_grad = Vec2::new(dx, dy) * dynamic_param.gradient_scale;
+    let new_grad = Vec2::new(dx, dy) * dynamic_param.gradient_strength;
 
-    *grad = ImageGradient(new_grad);
+    let grad = field.0.get_pixel_mut(x, y);
+    grad[0] += new_grad.x;
+    grad[1] += new_grad.y;
   }
 }
 
@@ -355,42 +352,58 @@ fn accurate_gradient(image: &ScalarField, n_iter: usize) -> VectorField {
 fn update_repel_gradient(
   static_param: Res<StaticParam>,
   dynamic_param: Res<DynamicParam>,
-  all_trans: Query<&Transform>,
-  mut q: Query<(&Transform, &mut RepelGradient)>,
+  mut field: ResMut<ForceField>,
+  q: Query<&Transform>,
   all_circles: Res<TrackedCircles>,
 ) {
   let mut canvas =
     new_scalar_field(static_param.width() as u32, static_param.height() as u32);
 
-  all_trans.iter_many(&all_circles.circles).for_each(|t| {
+  q.iter_many(&all_circles.circles).for_each(|t| {
     let [x, y] = static_param.translation_to_pixel(&t.translation);
     canvas[(x, y)].0[0] += 0.5;
   });
 
   let gradient = accurate_gradient(&canvas, 6);
 
-  for (trans, mut grad) in q.iter_mut() {
+  for trans in q.iter_many(&all_circles.circles) {
     let [x, y] = static_param.translation_to_pixel(&trans.translation);
 
     let grad_at_point = gradient.get_pixel(x, y).0;
     let dx = grad_at_point[0];
     let dy = -grad_at_point[1];
 
-    let new_grad = -Vec2::new(dx, dy);
-    *grad = RepelGradient(new_grad * dynamic_param.repel_coeff);
+    let new_grad = -Vec2::new(dx, dy) * dynamic_param.repel_strength;
+
+    let grad = field.0.get_pixel_mut(x, y);
+    grad[0] += new_grad.x;
+    grad[1] += new_grad.y;
   }
+}
+
+fn update_force(
+  mut field: ResMut<ForceField>,
+  mut q: Query<(&Transform, &mut Force)>,
+  param: Res<StaticParam>,
+) {
+  for (trans, mut force) in q.iter_mut() {
+    let [x, y] = param.translation_to_pixel(&trans.translation);
+    let grad = field.0.get_pixel(x, y);
+    force.0[0] = grad[0];
+    force.0[1] = grad[1];
+  }
+
+  field.0.fill(0.0);
 }
 
 fn update_velocity(
   time: Res<Time>,
   dyn_param: Res<DynamicParam>,
-  mut q: Query<(&mut Velocity, &ImageGradient, &RepelGradient)>,
+  mut q: Query<(&mut Velocity, &Force)>,
 ) {
-  for (mut vel, grad, grad2) in q.iter_mut() {
-    let force = grad.0 + grad2.0;
-    vel.0 += force * time.delta_seconds();
-    vel.0 = vel.0.clamp_length_max(dyn_param.max_velocity);
-    vel.0 *= (1.0 - dyn_param.friction_coeff).clamp(0.0, 1.0);
+  for (mut vel, force) in q.iter_mut() {
+    vel.0 += force.0 * time.delta_seconds();
+    vel.0 *= (1.0 - dyn_param.friction).clamp(0.0, 1.0);
   }
 }
 
@@ -411,7 +424,7 @@ fn physics_velocity_system(
   }
 }
 
-fn inspect_buffer(mut ctx: EguiContexts, preview: Res<LumaGridPreview>) {
+fn inspect_buffer(mut ctx: EguiContexts, preview: Res<CameraStreamPreview>) {
   let preview_handle = &preview.0;
 
   let texture_id = ctx
@@ -730,4 +743,15 @@ fn filter_3x3(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
     });
 
   result
+}
+
+impl FromWorld for ForceField {
+  fn from_world(world: &mut World) -> Self {
+    let static_param = world.resource::<StaticParam>();
+    let force_field = ImageBuffer::new(
+      static_param.width() as u32,
+      static_param.height() as u32,
+    );
+    Self(force_field)
+  }
 }
