@@ -31,6 +31,7 @@ use image::{
 };
 use image::{DynamicImage, LumaA};
 use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
+use pipeline::ImageDownscale;
 use safe_transmute::transmute_to_bytes;
 
 mod pipeline;
@@ -125,6 +126,9 @@ fn main() {
     ..default()
   });
 
+  let downscale_pipeline_plugin =
+    pipeline::ImageDownscalePlugin::<CameraFeedTag>::new((512, 512));
+
   App::new()
     .add_plugins(plugins)
     .add_plugin(EguiPlugin)
@@ -132,16 +136,14 @@ fn main() {
     .init_resource::<DynamicParam>()
     .init_resource::<TrackedCircles>()
     .init_resource::<ForceField>()
-    .add_plugin(pipeline::ImageDownscalePlugin::<CameraFeedTag>::default())
+    .add_plugin(downscale_pipeline_plugin)
     .add_plugin(ResourceInspectorPlugin::<DynamicParam>::default())
     .add_plugin(FrameTimeDiagnosticsPlugin)
     .add_plugin(LogDiagnosticsPlugin::default())
     .add_startup_system(setup_webcam)
     .add_startup_system(setup_camera)
     .add_startup_system(setup_downscale_debugger.after(setup_webcam))
-    .add_system(
-      copy_camera_to_downscales.run_if(resource_exists::<CameraStream>()),
-    )
+    .add_system(copy_camera_to_downscales)
     // .add_startup_system(setup_circle_bundle.pipe(spawn_circles))
     // .add_system(save_camera_output.run_if(resource_exists::<CameraDev>()))
     // .add_system(
@@ -165,11 +167,8 @@ fn main() {
 
 fn setup_downscale_debugger(
   mut commands: Commands,
-  mut images: ResMut<Assets<Image>>,
+  image_downscale: Res<pipeline::ImageDownscale<CameraFeedTag>>,
 ) {
-  let image_downscale =
-    pipeline::ImageDownscale::<CameraFeedTag>::new((512, 512), &mut images);
-
   let sprite = |i: usize| SpriteBundle {
     sprite: Sprite {
       custom_size: Some([100.0 / 2f32.powi(i as i32); 2].into()),
@@ -199,6 +198,7 @@ fn copy_camera_to_downscales(
   let Ok(image) = receiver.try_recv() else {
     return;
   };
+  println!("received image");
 
   let gray_image = image.as_luma8().unwrap();
   let scalar_field = to_scalar_field(gray_image);

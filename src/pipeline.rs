@@ -49,7 +49,7 @@ impl<Tag: TagLike> ImageDownscale<Tag> {
     let mut image = |i| {
       let format = TextureFormat::R32Float;
       let dim = TextureDimension::D2;
-      let mut img = Image::new_fill(extent(i), dim, &[0], format);
+      let mut img = Image::new_fill(extent(i), dim, &[0, 0, 0, 0], format);
       img.texture_descriptor.usage = TextureUsages::COPY_DST
         | TextureUsages::STORAGE_BINDING
         | TextureUsages::TEXTURE_BINDING;
@@ -139,19 +139,29 @@ impl<Tag: TagLike> FromWorld for ImageDownscalePipeline<Tag> {
   }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ImageDownscalePlugin<Tag: TagLike> {
+  initial_size: (u32, u32),
   marker: PhantomData<Tag>,
 }
 
-#[derive(Debug, Clone, Resource)]
-struct ImageDownscaleBindGroup<Tag: TagLike> {
-  bind_groups: [BindGroup; NUM_ITER],
-  marker: PhantomData<Tag>,
+impl<Tag: TagLike> ImageDownscalePlugin<Tag> {
+  pub fn new(initial_size: (u32, u32)) -> Self {
+    let marker = PhantomData;
+    Self {
+      initial_size,
+      marker,
+    }
+  }
 }
 
 impl<Tag: TagLike> Plugin for ImageDownscalePlugin<Tag> {
   fn build(&self, app: &mut App) {
+    let mut images = app.world.resource_mut::<Assets<Image>>();
+    let image_downscale =
+      ImageDownscale::<Tag>::new(self.initial_size, &mut images);
+
+    app.insert_resource(image_downscale);
     app.add_plugin(ExtractResourcePlugin::<ImageDownscale<Tag>>::default());
 
     let render_app = app.sub_app_mut(RenderApp);
@@ -173,6 +183,12 @@ impl<Tag: TagLike> Plugin for ImageDownscalePlugin<Tag> {
       node_id = new_node_id.into();
     }
   }
+}
+
+#[derive(Debug, Clone, Resource)]
+struct ImageDownscaleBindGroup<Tag: TagLike> {
+  bind_groups: [BindGroup; NUM_ITER],
+  marker: PhantomData<Tag>,
 }
 
 fn queue_bind_group<Tag: TagLike>(
