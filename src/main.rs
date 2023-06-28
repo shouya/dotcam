@@ -29,6 +29,8 @@ use image::{
 use image::{DynamicImage, LumaA};
 use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
 
+mod pipeline;
+
 type ScalarField = ImageBuffer<Luma<f32>, Vec<f32>>;
 type VectorField = ImageBuffer<LumaA<f32>, Vec<f32>>;
 
@@ -305,7 +307,7 @@ fn update_image_gradient(
 ) {
   let luma_grid = to_scalar_field(&luma_grid.0);
 
-  let gradient = accurate_gradient(&luma_grid, 1);
+  let gradient = accurate_gradient(&luma_grid, 2);
 
   for trans in q.iter_mut() {
     let [x, y] = param.translation_to_pixel(&trans.translation);
