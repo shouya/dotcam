@@ -10,7 +10,10 @@ use bevy::{
     IntoSystemConfig, Mesh, PluginGroup, Query, Reflect, ReflectResource, Res,
     ResMut, Resource, Transform, Vec2, Vec3, With, World,
   },
-  sprite::{ColorMaterial, MaterialMesh2dBundle},
+  sprite::{
+    self, ColorMaterial, MaterialMesh2dBundle, Sprite, SpriteBatch,
+    SpriteBundle,
+  },
   time::Time,
   window::{Window, WindowCloseRequested, WindowPlugin},
 };
@@ -28,6 +31,7 @@ use image::{
 };
 use image::{DynamicImage, LumaA};
 use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
+use safe_transmute::transmute_to_bytes;
 
 mod pipeline;
 
@@ -106,6 +110,10 @@ impl Default for DynamicParam {
   }
 }
 
+#[derive(Default, Clone)]
+struct CameraFeedTag;
+impl pipeline::TagLike for CameraFeedTag {}
+
 fn main() {
   let static_param = StaticParam::default();
   let plugins = DefaultPlugins.set(WindowPlugin {
@@ -124,30 +132,84 @@ fn main() {
     .init_resource::<DynamicParam>()
     .init_resource::<TrackedCircles>()
     .init_resource::<ForceField>()
+    .add_plugin(pipeline::ImageDownscalePlugin::<CameraFeedTag>::default())
     .add_plugin(ResourceInspectorPlugin::<DynamicParam>::default())
     .add_plugin(FrameTimeDiagnosticsPlugin)
     .add_plugin(LogDiagnosticsPlugin::default())
     .add_startup_system(setup_webcam)
     .add_startup_system(setup_camera)
-    .add_startup_system(setup_circle_bundle.pipe(spawn_circles))
-    .add_system(save_camera_output.run_if(resource_exists::<CameraDev>()))
+    .add_startup_system(setup_downscale_debugger.after(setup_webcam))
     .add_system(
-      update_image_gradient.run_if(
-        resource_exists::<CameraStream>()
-          .and_then(resource_changed::<CameraStream>()),
-      ),
+      copy_camera_to_downscales.run_if(resource_exists::<CameraStream>()),
     )
-    .add_system(update_repel_gradient)
-    .add_system(
-      update_force
-        .after(update_image_gradient)
-        .after(update_repel_gradient),
-    )
-    .add_system(update_velocity.after(update_force))
-    .add_system(inspect_buffer.run_if(resource_exists::<CameraStreamPreview>()))
-    .add_system(physics_velocity_system)
+    // .add_startup_system(setup_circle_bundle.pipe(spawn_circles))
+    // .add_system(save_camera_output.run_if(resource_exists::<CameraDev>()))
+    // .add_system(
+    //   udpate_image_gradient.run_if(
+    //     resource_exists::<CameraStream>()
+    //       .and_then(resource_changed::<CameraStream>()),
+    //   ),
+    // )
+    // .add_system(update_repel_gradient)
+    // .add_system(
+    //   update_force
+    //     .after(update_image_gradient)
+    //     .after(update_repel_gradient),
+    // )
+    // .add_system(update_velocity.after(update_force))
+    // .add_system(inspect_buffer.run_if(resource_exists::<CameraStreamPreview>()))
+    // .add_system(physics_velocity_system)
     .add_system(stop_webcam.run_if(on_event::<WindowCloseRequested>()))
     .run();
+}
+
+fn setup_downscale_debugger(
+  mut commands: Commands,
+  mut images: ResMut<Assets<Image>>,
+) {
+  let image_downscale =
+    pipeline::ImageDownscale::<CameraFeedTag>::new((512, 512), &mut images);
+
+  let sprite = |i: usize| SpriteBundle {
+    sprite: Sprite {
+      custom_size: Some([100.0 / 2f32.powi(i as i32); 2].into()),
+      ..default()
+    },
+    texture: image_downscale.textures[i].clone(),
+    transform: Transform::from_translation(Vec3::new(
+      (i as f32 - 2.0) * 100.0,
+      0.0,
+      0.0,
+    )),
+    ..default()
+  };
+
+  commands.spawn(sprite(0));
+  commands.spawn(sprite(1));
+  commands.spawn(sprite(2));
+  commands.spawn(sprite(3));
+}
+
+fn copy_camera_to_downscales(
+  camera_dev: Res<CameraDev>,
+  downscaler: Res<pipeline::ImageDownscale<CameraFeedTag>>,
+  mut images: ResMut<Assets<Image>>,
+) {
+  let receiver = &camera_dev.receiver;
+  let Ok(image) = receiver.try_recv() else {
+    return;
+  };
+
+  let gray_image = image.as_luma8().unwrap();
+  let scalar_field = to_scalar_field(gray_image);
+
+  #[rustfmt::skip]
+  let Some(input_texture) = images.get_mut(&downscaler.input()) else {
+    return;
+  };
+
+  let buffer = transmute_to_bytes(scalar_field.as_raw().as_slice());
+  input_texture.data.copy_from_slice(buffer);
 }
 
 fn setup_webcam(mut commands: Commands, param: Res<StaticParam>) {
@@ -647,8 +709,8 @@ fn filter_3x3(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
   let width_simd = Simd::splat(width as i32);
   let height_simd = Simd::splat(height as i32);
 
-  let kernel_simd =
-    Simd::gather_or_default(kernel, Simd::from_array([0, 1, 2, 3, 5, 6, 7, 8]));
+  let kernel_index_simd = Simd::from_array([0, 1, 2, 3, 5, 6, 7, 8]);
+  let kernel_simd = Simd::gather_or_default(kernel, kernel_index_simd);
   let kernel_center = kernel[4];
 
   let mut result = new_scalar_field(width as u32, height as u32);

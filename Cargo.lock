@@ -1633,6 +1633,7 @@ dependencies = [
  "keyde",
  "nokhwa",
  "rand 0.8.5",
+ "safe-transmute",
 ]
 
 [[package]]
@@ -3666,6 +3667,12 @@ name = "ryu"
 version = "1.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f91339c0467de62360649f8d3e185ca8de4224ff281f66000de5eb2a77a79041"
+
+[[package]]
+name = "safe-transmute"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98a01dab6acf992653be49205bdd549f32f17cb2803e8eacf1560bf97259aae8"
 
 [[package]]
 name = "safe_arch"

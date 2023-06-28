@@ -26,10 +26,10 @@ use bevy::{
 const NUM_ITER: usize = 3;
 const NUM_WORKGROUPS: u32 = 8;
 
-trait TagLike: Send + Sync + Clone + Default + 'static {}
+pub trait TagLike: Send + Sync + Clone + Default + 'static {}
 
 #[derive(Debug, Clone, Resource, ExtractResource)]
-struct ImageDownscale<Tag: TagLike> {
+pub struct ImageDownscale<Tag: TagLike> {
   pub sizes: [(u32, u32); NUM_ITER + 1],
   // input is always at textures[0]
   pub textures: [Handle<Image>; NUM_ITER + 1],
@@ -37,7 +37,7 @@ struct ImageDownscale<Tag: TagLike> {
 }
 
 impl<Tag: TagLike> ImageDownscale<Tag> {
-  fn new(initial_size: (u32, u32), assets: &mut Assets<Image>) -> Self {
+  pub fn new(initial_size: (u32, u32), assets: &mut Assets<Image>) -> Self {
     let size = |i| (initial_size.0 >> i, initial_size.1 >> i);
 
     let extent = |i| Extent3d {
@@ -67,11 +67,11 @@ impl<Tag: TagLike> ImageDownscale<Tag> {
     }
   }
 
-  fn input(&self) -> Handle<Image> {
+  pub fn input(&self) -> Handle<Image> {
     self.textures[0].clone()
   }
 
-  fn output(&self) -> Handle<Image> {
+  pub fn output(&self) -> Handle<Image> {
     self.textures[NUM_ITER].clone()
   }
 }
@@ -139,8 +139,8 @@ impl<Tag: TagLike> FromWorld for ImageDownscalePipeline<Tag> {
   }
 }
 
-#[derive(Debug, Clone)]
-struct ImageDownscalePlugin<Tag: TagLike> {
+#[derive(Debug, Clone, Default)]
+pub struct ImageDownscalePlugin<Tag: TagLike> {
   marker: PhantomData<Tag>,
 }
 
