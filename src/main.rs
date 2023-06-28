@@ -198,7 +198,6 @@ fn copy_camera_to_downscales(
   let Ok(image) = receiver.try_recv() else {
     return;
   };
-  println!("received image");
 
   let gray_image = image.as_luma8().unwrap();
   let scalar_field = to_scalar_field(gray_image);

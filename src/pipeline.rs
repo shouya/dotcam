@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Debug, marker::PhantomData};
+use std::{array, borrow::Cow, fmt::Debug, marker::PhantomData};
 
 use bevy::{
   prelude::{
@@ -203,7 +203,7 @@ fn queue_bind_group<Tag: TagLike>(
     resource: BindingResource::TextureView(&gpu_images[handle].texture_view),
   };
 
-  let bind_groups = [0, 1, 2].map(|i| {
+  let bind_groups = array::from_fn(|i| {
     let bind_group_entries = vec![
       make_bind_group_entry(&downscale.textures[i], 0),
       make_bind_group_entry(&downscale.textures[i + 1], 1),
