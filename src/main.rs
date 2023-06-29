@@ -4,36 +4,31 @@
 use bevy::{
   diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
   prelude::{
-    default, on_event, resource_changed, resource_exists, shape, App, Assets,
-    Bundle, Camera2d, Camera2dBundle, Color, Commands, Component, Condition,
-    DefaultPlugins, Entity, FromWorld, Handle, Image, In, IntoPipeSystem,
-    IntoSystemConfig, Mesh, PluginGroup, Query, Reflect, ReflectResource, Res,
-    ResMut, Resource, Transform, Vec2, Vec3, With, World,
+    default, resource_changed, shape, App, Assets, Bundle, Camera2d,
+    Camera2dBundle, Color, Commands, Component, DefaultPlugins, Entity,
+    FromWorld, Image, In, IntoPipeSystem, IntoSystemConfig, Mesh, PluginGroup,
+    Query, Reflect, ReflectResource, Res, ResMut, Resource, Transform, Vec2,
+    Vec3, With, World,
   },
-  sprite::{
-    self, ColorMaterial, MaterialMesh2dBundle, Sprite, SpriteBatch,
-    SpriteBundle,
-  },
+  render::render_resource::TextureFormat,
+  sprite::{ColorMaterial, MaterialMesh2dBundle, Sprite, SpriteBundle},
   time::Time,
-  window::{Window, WindowCloseRequested, WindowPlugin},
+  window::{Window, WindowPlugin},
 };
-use bevy_egui::{EguiContexts, EguiPlugin};
+use bevy_egui::EguiPlugin;
 use bevy_inspector_egui::{
   prelude::ReflectInspectorOptions, quick::ResourceInspectorPlugin,
   InspectorOptions,
 };
 
-use crossbeam::channel::{self, Receiver};
+use camera_feed::{CameraFeedPlugin, CameraStream};
+use image::LumaA;
 use image::{
-  codecs::jpeg::JpegDecoder,
   imageops::{resize, FilterType},
-  GrayImage, ImageBuffer, ImageDecoder, Luma,
+  GrayImage, ImageBuffer, Luma,
 };
-use image::{DynamicImage, LumaA};
-use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
-use pipeline::ImageDownscale;
-use safe_transmute::transmute_to_bytes;
 
+mod camera_feed;
 mod pipeline;
 
 type ScalarField = ImageBuffer<Luma<f32>, Vec<f32>>;
@@ -41,19 +36,6 @@ type VectorField = ImageBuffer<LumaA<f32>, Vec<f32>>;
 
 #[derive(Component)]
 struct GameCamera;
-
-#[derive(Resource)]
-struct CameraDev {
-  #[allow(unused)]
-  camera: CallbackCamera,
-  receiver: Receiver<DynamicImage>,
-}
-
-#[derive(Resource, Clone, Default)]
-struct CameraStream(GrayImage);
-
-#[derive(Resource, Clone, Default)]
-struct CameraStreamPreview(Handle<Image>);
 
 #[derive(Component, Clone, Copy, Default)]
 struct Velocity(Vec2);
@@ -140,28 +122,22 @@ fn main() {
     .add_plugin(ResourceInspectorPlugin::<DynamicParam>::default())
     .add_plugin(FrameTimeDiagnosticsPlugin)
     .add_plugin(LogDiagnosticsPlugin::default())
-    .add_startup_system(setup_webcam)
+    .add_plugin(CameraFeedPlugin::default())
     .add_startup_system(setup_camera)
-    .add_startup_system(setup_downscale_debugger.after(setup_webcam))
-    .add_system(copy_camera_to_downscales)
-    // .add_startup_system(setup_circle_bundle.pipe(spawn_circles))
-    // .add_system(save_camera_output.run_if(resource_exists::<CameraDev>()))
-    // .add_system(
-    //   udpate_image_gradient.run_if(
-    //     resource_exists::<CameraStream>()
-    //       .and_then(resource_changed::<CameraStream>()),
-    //   ),
-    // )
-    // .add_system(update_repel_gradient)
-    // .add_system(
-    //   update_force
-    //     .after(update_image_gradient)
-    //     .after(update_repel_gradient),
-    // )
-    // .add_system(update_velocity.after(update_force))
-    // .add_system(inspect_buffer.run_if(resource_exists::<CameraStreamPreview>()))
-    // .add_system(physics_velocity_system)
-    .add_system(stop_webcam.run_if(on_event::<WindowCloseRequested>()))
+    // .add_startup_system(setup_downscale_debugger)
+    // .add_system(copy_camera_to_downscales)
+    .add_startup_system(setup_circle_bundle.pipe(spawn_circles))
+    .add_system(
+      update_image_gradient.run_if(resource_changed::<CameraStream>()),
+    )
+    .add_system(update_repel_gradient)
+    .add_system(
+      update_force
+        .after(update_image_gradient)
+        .after(update_repel_gradient),
+    )
+    .add_system(update_velocity.after(update_force))
+    .add_system(physics_velocity_system)
     .run();
 }
 
@@ -189,48 +165,27 @@ fn setup_downscale_debugger(
   commands.spawn(sprite(3));
 }
 
-fn copy_camera_to_downscales(
-  camera_dev: Res<CameraDev>,
-  downscaler: Res<pipeline::ImageDownscale<CameraFeedTag>>,
-  mut images: ResMut<Assets<Image>>,
-) {
-  let receiver = &camera_dev.receiver;
-  let Ok(image) = receiver.try_recv() else {
-    return;
-  };
+// fn copy_camera_to_downscales(
+//   camera_dev: Res<CameraDev>,
+//   downscaler: Res<pipeline::ImageDownscale<CameraFeedTag>>,
+//   mut images: ResMut<Assets<Image>>,
+// ) {
+//   let receiver = &camera_dev.receiver;
+//   let Ok(image) = receiver.try_recv() else {
+//     return;
+//   };
 
-  let gray_image = image.as_luma8().unwrap();
-  let scalar_field = to_scalar_field(gray_image);
+//   let gray_image = image.as_luma8().unwrap();
+//   let scalar_field = to_scalar_field(gray_image);
 
-  #[rustfmt::skip]
-  let Some(input_texture) = images.get_mut(&downscaler.input()) else {
-    return;
-  };
+//   #[rustfmt::skip]
+//   let Some(input_texture) = images.get_mut(&downscaler.input()) else {
+//     return;
+//   };
 
-  let buffer = transmute_to_bytes(scalar_field.as_raw().as_slice());
-  input_texture.data.copy_from_slice(buffer);
-}
-
-fn setup_webcam(mut commands: Commands, param: Res<StaticParam>) {
-  use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
-  let index = CameraIndex::Index(0);
-  let requested = RequestedFormat::new::<LumaFormat>(
-    RequestedFormatType::AbsoluteHighestResolution,
-  );
-
-  let camera = Camera::new(index, requested).unwrap();
-
-  let (sender, receiver) = channel::bounded(1);
-
-  let size = [param.width() as u32, param.height() as u32];
-  let mut camera = CallbackCamera::with_custom(camera, move |buffer| {
-    let image = camera_buffer_to_image(buffer, size);
-    sender.send(image).unwrap();
-  });
-  camera.open_stream().unwrap();
-
-  commands.insert_resource(CameraDev { camera, receiver });
-}
+//   let buffer = transmute_to_bytes(scalar_field.as_raw().as_slice());
+//   input_texture.data.copy_from_slice(buffer);
+// }
 
 fn setup_camera(mut commands: Commands) {
   let camera_2d = Camera2d {
@@ -242,77 +197,6 @@ fn setup_camera(mut commands: Commands) {
   commands
     .spawn((Camera2dBundle::default(), GameCamera))
     .insert(camera_2d);
-}
-
-fn camera_buffer_to_image(
-  buffer: nokhwa::Buffer,
-  size: [u32; 2],
-) -> DynamicImage {
-  use nokhwa::utils::FrameFormat::MJPEG;
-
-  assert!(buffer.source_frame_format() == MJPEG);
-
-  let decoder = JpegDecoder::new(buffer.buffer()).unwrap();
-  debug_assert!(decoder.color_type() == image::ColorType::Rgb8);
-
-  let image: DynamicImage = buffer.decode_image::<LumaFormat>().unwrap().into();
-
-  let dim = image.height().min(image.width());
-  let image = image
-    .crop_imm(
-      (image.width() - dim) / 2,
-      (image.height() - dim) / 2,
-      dim,
-      dim,
-    )
-    .resize_exact(size[0], size[1], image::imageops::FilterType::Nearest)
-    .fliph()
-    .into_luma8();
-
-  // image = imageproc::contrast::adaptive_threshold(&image, 10);
-
-  image.into()
-}
-
-fn save_camera_output(
-  mut commands: Commands,
-  camera_dev: Res<CameraDev>,
-  mut luma_grid: Option<ResMut<CameraStream>>,
-  mut preview: Option<ResMut<CameraStreamPreview>>,
-  mut images: ResMut<Assets<Image>>,
-) {
-  let receiver = &camera_dev.receiver;
-  let Ok(image) = receiver.try_recv() else {
-    return;
-  };
-
-  if let Some(preview) = preview.as_mut() {
-    let bevy_image = images.get_mut(&preview.0).unwrap();
-    bevy_image.data.copy_from_slice(image.as_bytes());
-  } else {
-    let data = image.as_bytes().to_vec();
-    let width = image.width();
-    let height = image.height();
-    let format = bevy::render::render_resource::TextureFormat::R8Unorm;
-    let bevy_image = Image::new(
-      bevy::render::render_resource::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      bevy::render::render_resource::TextureDimension::D2,
-      data,
-      format,
-    );
-    let handle = images.add(bevy_image);
-    commands.insert_resource(CameraStreamPreview(handle));
-  }
-
-  if let Some(luma_grid) = luma_grid.as_mut() {
-    luma_grid.0.copy_from_slice(image.as_bytes());
-  } else {
-    commands.insert_resource(CameraStream(image.into_luma8()));
-  }
 }
 
 fn setup_circle_bundle(
@@ -363,10 +247,12 @@ fn update_image_gradient(
   dynamic_param: Res<DynamicParam>,
   mut field: ResMut<ForceField>,
   mut q: Query<&Transform, With<Velocity>>,
-  luma_grid: Res<CameraStream>,
+  images: Res<Assets<Image>>,
+  camera_stream: Res<CameraStream>,
   param: Res<StaticParam>,
 ) {
-  let luma_grid = to_scalar_field(&luma_grid.0);
+  let image = images.get(&camera_stream.0).unwrap();
+  let luma_grid = bevy_image_to_scalar_field(image);
 
   let gradient = accurate_gradient(&luma_grid, 2);
 
@@ -487,29 +373,6 @@ fn physics_velocity_system(
   }
 }
 
-fn inspect_buffer(mut ctx: EguiContexts, preview: Res<CameraStreamPreview>) {
-  let preview_handle = &preview.0;
-
-  let texture_id = ctx
-    .image_id(preview_handle)
-    .unwrap_or_else(|| ctx.add_image(preview_handle.clone()));
-
-  bevy_inspector_egui::egui::Window::new("Camera Buffer").show(
-    ctx.ctx_mut(),
-    |ui| {
-      ui.image(texture_id, [100.0, 100.0]);
-    },
-  );
-}
-
-fn stop_webcam(mut _webcam: ResMut<CameraDev>) {
-  // it's unable to acquire lock from another thread to stop
-  // the camera stream. resulting the program to hang.
-  //
-  // this hack is simply exit the program.
-  std::process::exit(0);
-}
-
 impl Default for StaticParam {
   fn default() -> Self {
     Self {
@@ -607,10 +470,22 @@ fn new_scalar_field(w: u32, h: u32) -> ScalarField {
   ImageBuffer::new(w, h)
 }
 
-fn to_scalar_field(image: &GrayImage) -> ScalarField {
+fn gray_image_to_scalar_field(image: &GrayImage) -> ScalarField {
   let (w, h) = image.dimensions();
   let vec = image.as_raw().iter().map(|&v| v as f32 / 255.0).collect();
   ImageBuffer::from_vec(w, h, vec).unwrap()
+}
+
+fn bevy_image_to_scalar_field(image: &Image) -> ScalarField {
+  assert!(image.texture_descriptor.format == TextureFormat::R8Unorm);
+
+  let w = image.size().x as u32;
+  let h = image.size().y as u32;
+
+  ImageBuffer::from_fn(w, h, |x, y| {
+    let pixel = image.data[y as usize * w as usize + x as usize];
+    Luma([pixel as f32 / 255.0])
+  })
 }
 
 #[allow(unused)]
