@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::{array, borrow::Cow, fmt::Debug, marker::PhantomData};
 
 use bevy::{
