@@ -31,15 +31,44 @@ const NUM_WORKGROUPS: u32 = 8;
 pub trait TagLike: Send + Sync + Clone + Default + 'static {}
 
 #[derive(Debug, Clone, Resource, ExtractResource)]
-pub struct ImageDownscale<Tag: TagLike> {
+pub struct ImageDownscaler<Tag: TagLike> {
   pub sizes: [(u32, u32); NUM_ITER + 1],
   // input is always at textures[0]
   pub textures: [Handle<Image>; NUM_ITER + 1],
   marker: PhantomData<Tag>,
 }
 
-impl<Tag: TagLike> ImageDownscale<Tag> {
-  pub fn new(initial_size: (u32, u32), assets: &mut Assets<Image>) -> Self {
+impl<Tag: TagLike> ImageDownscaler<Tag> {
+  pub fn new(initial_size: (u32, u32), images: &mut Assets<Image>) -> Self {
+    let extent = Extent3d {
+      width: initial_size.0,
+      height: initial_size.1,
+      depth_or_array_layers: 1,
+    };
+
+    let format = TextureFormat::R32Float;
+    let dim = TextureDimension::D2;
+    let mut img = Image::new_fill(extent, dim, &[0, 0, 0, 0], format);
+
+    let input_image_handle = images.add(img);
+
+    Self::new_with_input_image(input_image_handle, images)
+  }
+
+  pub fn new_with_input_image(
+    input_image_handle: Handle<Image>,
+    images: &mut Assets<Image>,
+  ) -> Self {
+    let mut input_image = images.get_mut(&input_image_handle).unwrap();
+    let initial_size = (
+      input_image.texture_descriptor.size.width,
+      input_image.texture_descriptor.size.height,
+    );
+
+    input_image.texture_descriptor.usage = TextureUsages::COPY_DST
+      | TextureUsages::STORAGE_BINDING
+      | TextureUsages::TEXTURE_BINDING;
+
     let size = |i| (initial_size.0 >> i, initial_size.1 >> i);
 
     let extent = |i| Extent3d {
@@ -55,11 +84,11 @@ impl<Tag: TagLike> ImageDownscale<Tag> {
       img.texture_descriptor.usage = TextureUsages::COPY_DST
         | TextureUsages::STORAGE_BINDING
         | TextureUsages::TEXTURE_BINDING;
-      assets.add(img)
+      images.add(img)
     };
 
     let sizes = [size(0), size(1), size(2), size(3)];
-    let textures = [image(0), image(1), image(2), image(3)];
+    let textures = [input_image_handle, image(1), image(2), image(3)];
     let marker = PhantomData;
 
     Self {
@@ -79,13 +108,13 @@ impl<Tag: TagLike> ImageDownscale<Tag> {
 }
 
 #[derive(Debug, Clone, Resource)]
-struct ImageDownscalePipeline<Tag: TagLike> {
+struct ImageDownscalerPipeline<Tag: TagLike> {
   marker: PhantomData<Tag>,
   bind_group_layout: BindGroupLayout,
   pipeline_id: CachedComputePipelineId,
 }
 
-impl<Tag: TagLike> FromWorld for ImageDownscalePipeline<Tag> {
+impl<Tag: TagLike> FromWorld for ImageDownscalerPipeline<Tag> {
   fn from_world(world: &mut bevy::prelude::World) -> Self {
     let bind_group_layout = {
       let render_device = world.resource::<RenderDevice>();
@@ -142,12 +171,12 @@ impl<Tag: TagLike> FromWorld for ImageDownscalePipeline<Tag> {
 }
 
 #[derive(Debug, Clone)]
-pub struct ImageDownscalePlugin<Tag: TagLike> {
+pub struct ImageDownscalerPlugin<Tag: TagLike> {
   initial_size: (u32, u32),
   marker: PhantomData<Tag>,
 }
 
-impl<Tag: TagLike> ImageDownscalePlugin<Tag> {
+impl<Tag: TagLike> ImageDownscalerPlugin<Tag> {
   pub fn new(initial_size: (u32, u32)) -> Self {
     let marker = PhantomData;
     Self {
@@ -157,18 +186,18 @@ impl<Tag: TagLike> ImageDownscalePlugin<Tag> {
   }
 }
 
-impl<Tag: TagLike> Plugin for ImageDownscalePlugin<Tag> {
+impl<Tag: TagLike> Plugin for ImageDownscalerPlugin<Tag> {
   fn build(&self, app: &mut App) {
     let mut images = app.world.resource_mut::<Assets<Image>>();
     let image_downscale =
-      ImageDownscale::<Tag>::new(self.initial_size, &mut images);
+      ImageDownscaler::<Tag>::new(self.initial_size, &mut images);
 
     app.insert_resource(image_downscale);
-    app.add_plugin(ExtractResourcePlugin::<ImageDownscale<Tag>>::default());
+    app.add_plugin(ExtractResourcePlugin::<ImageDownscaler<Tag>>::default());
 
     let render_app = app.sub_app_mut(RenderApp);
     render_app
-      .init_resource::<ImageDownscalePipeline<Tag>>()
+      .init_resource::<ImageDownscalerPipeline<Tag>>()
       .add_system(queue_bind_group::<Tag>.in_set(RenderSet::Queue));
 
     let mut render_graph = render_app.world.resource_mut::<RenderGraph>();
@@ -179,7 +208,7 @@ impl<Tag: TagLike> Plugin for ImageDownscalePlugin<Tag> {
     for i in (0..NUM_ITER).rev() {
       let new_node_id = render_graph.add_node(
         format!("image_downscale_{}", i),
-        ImageDownscaleNode::<Tag>::new(i),
+        ImageDownscalerNode::<Tag>::new(i),
       );
       render_graph.add_node_edge(new_node_id, node_id);
       node_id = new_node_id.into();
@@ -188,7 +217,7 @@ impl<Tag: TagLike> Plugin for ImageDownscalePlugin<Tag> {
 }
 
 #[derive(Debug, Clone, Resource)]
-struct ImageDownscaleBindGroup<Tag: TagLike> {
+struct ImageDownscalerBindGroup<Tag: TagLike> {
   bind_groups: [BindGroup; NUM_ITER],
   marker: PhantomData<Tag>,
 }
@@ -197,8 +226,8 @@ fn queue_bind_group<Tag: TagLike>(
   mut commands: Commands,
   render_device: Res<RenderDevice>,
   gpu_images: Res<RenderAssets<Image>>,
-  downscale: Res<ImageDownscale<Tag>>,
-  pipeline: Res<ImageDownscalePipeline<Tag>>,
+  downscaler: Res<ImageDownscaler<Tag>>,
+  pipeline: Res<ImageDownscalerPipeline<Tag>>,
 ) {
   let make_bind_group_entry = |handle, i| BindGroupEntry {
     binding: i,
@@ -207,8 +236,8 @@ fn queue_bind_group<Tag: TagLike>(
 
   let bind_groups = array::from_fn(|i| {
     let bind_group_entries = vec![
-      make_bind_group_entry(&downscale.textures[i], 0),
-      make_bind_group_entry(&downscale.textures[i + 1], 1),
+      make_bind_group_entry(&downscaler.textures[i], 0),
+      make_bind_group_entry(&downscaler.textures[i + 1], 1),
     ];
 
     render_device.create_bind_group(&BindGroupDescriptor {
@@ -218,7 +247,7 @@ fn queue_bind_group<Tag: TagLike>(
     })
   });
 
-  let resource = ImageDownscaleBindGroup::<Tag> {
+  let resource = ImageDownscalerBindGroup::<Tag> {
     bind_groups,
     marker: PhantomData,
   };
@@ -226,18 +255,18 @@ fn queue_bind_group<Tag: TagLike>(
 }
 
 #[derive(Default)]
-struct ImageDownscaleNode<Tag: TagLike> {
+struct ImageDownscalerNode<Tag: TagLike> {
   iteration: usize,
   marker: PhantomData<Tag>,
 }
-impl<Tag: TagLike> ImageDownscaleNode<Tag> {
+impl<Tag: TagLike> ImageDownscalerNode<Tag> {
   fn new(iteration: usize) -> Self {
     let marker = PhantomData;
     Self { iteration, marker }
   }
 }
 
-impl<Tag: TagLike> render_graph::Node for ImageDownscaleNode<Tag> {
+impl<Tag: TagLike> render_graph::Node for ImageDownscalerNode<Tag> {
   fn run(
     &self,
     _graph: &mut render_graph::RenderGraphContext,
@@ -245,10 +274,10 @@ impl<Tag: TagLike> render_graph::Node for ImageDownscaleNode<Tag> {
     world: &bevy::prelude::World,
   ) -> Result<(), render_graph::NodeRunError> {
     let pipeline_cache = world.resource::<PipelineCache>();
-    let pipeline = world.resource::<ImageDownscalePipeline<Tag>>();
-    let downscale = world.resource::<ImageDownscale<Tag>>();
-    let ImageDownscaleBindGroup { bind_groups, .. } =
-      world.resource::<ImageDownscaleBindGroup<Tag>>();
+    let pipeline = world.resource::<ImageDownscalerPipeline<Tag>>();
+    let downscale = world.resource::<ImageDownscaler<Tag>>();
+    let ImageDownscalerBindGroup { bind_groups, .. } =
+      world.resource::<ImageDownscalerBindGroup<Tag>>();
 
     #[rustfmt::skip]
     let Some(pipeline) =

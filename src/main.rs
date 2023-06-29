@@ -21,7 +21,7 @@ use cpu::DotCamPlugin;
 
 mod camera_feed;
 mod cpu;
-mod pipeline;
+mod gpu;
 
 #[derive(Component)]
 struct GameCamera;
