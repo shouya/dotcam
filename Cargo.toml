@@ -31,4 +31,6 @@ safe-transmute = "0.11.2"
 
 [features]
 simd = []
-default = ["simd"]
+default = ["simd", "cpu"]
+cpu = []
+gpu = []

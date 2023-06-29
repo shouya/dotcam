@@ -17,7 +17,10 @@ use bevy_inspector_egui::{
 };
 
 use camera_feed::CameraFeedPlugin;
+#[cfg(feature = "cpu")]
 use cpu::DotCamPlugin;
+#[cfg(feature = "gpu")]
+use gpu::DotCamPlugin;
 
 mod camera_feed;
 mod cpu;
