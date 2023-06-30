@@ -4,9 +4,9 @@
 use bevy::{
   diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
   prelude::{
-    default, App, Camera2d, Camera2dBundle, Color, Commands, Component,
-    DefaultPlugins, PluginGroup, Reflect, ReflectResource, Resource, Vec2,
-    Vec3,
+    default, App, AssetPlugin, Camera2d, Camera2dBundle, Color, Commands,
+    Component, DefaultPlugins, PluginGroup, Reflect, ReflectResource, Resource,
+    Vec2, Vec3,
   },
   window::{Window, WindowPlugin},
 };
@@ -65,14 +65,19 @@ impl Default for DynamicParam {
 
 fn main() {
   let static_param = StaticParam::default();
-  let plugins = DefaultPlugins.set(WindowPlugin {
-    primary_window: Some(Window {
-      title: "Dotcam".into(),
-      resolution: static_param.resolution(),
+  let plugins = DefaultPlugins
+    .set(WindowPlugin {
+      primary_window: Some(Window {
+        title: "Dotcam".into(),
+        resolution: static_param.resolution(),
+        ..default()
+      }),
       ..default()
-    }),
-    ..default()
-  });
+    })
+    .set(AssetPlugin {
+      watch_for_changes: true,
+      ..default()
+    });
 
   App::new()
     .add_plugins(plugins)

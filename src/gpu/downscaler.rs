@@ -5,7 +5,7 @@ use std::{array, borrow::Cow, fmt::Debug, marker::PhantomData};
 use bevy::{
   prelude::{
     App, AssetServer, Assets, Commands, FromWorld, Handle, Image,
-    IntoSystemConfig, Plugin, Res, Resource,
+    IntoSystemConfig, Plugin, Query, Res, ResMut, Resource,
   },
   render::{
     extract_resource::{ExtractResource, ExtractResourcePlugin},
@@ -24,9 +24,13 @@ use bevy::{
     RenderApp, RenderSet,
   },
 };
+use bevy_egui::{EguiContext, EguiUserTextures};
+use bevy_inspector_egui::egui;
 
 const NUM_ITER: usize = 3;
 const NUM_WORKGROUPS: u32 = 8;
+
+const TEXTURE_FORMAT: TextureFormat = TextureFormat::R32Float;
 
 pub trait TagLike: Send + Sync + Clone + Default + 'static {}
 
@@ -46,7 +50,7 @@ impl<Tag: TagLike> ImageDownscaler<Tag> {
       depth_or_array_layers: 1,
     };
 
-    let format = TextureFormat::R32Float;
+    let format = TEXTURE_FORMAT;
     let dim = TextureDimension::D2;
     let mut img = Image::new_fill(extent, dim, &[0, 0, 0, 0], format);
 
@@ -60,6 +64,7 @@ impl<Tag: TagLike> ImageDownscaler<Tag> {
     images: &mut Assets<Image>,
   ) -> Self {
     let mut input_image = images.get_mut(&input_image_handle).unwrap();
+    let format = input_image.texture_descriptor.format;
     let initial_size = (
       input_image.texture_descriptor.size.width,
       input_image.texture_descriptor.size.height,
@@ -78,7 +83,6 @@ impl<Tag: TagLike> ImageDownscaler<Tag> {
     };
 
     let mut image = |i| {
-      let format = TextureFormat::R32Float;
       let dim = TextureDimension::D2;
       let mut img = Image::new_fill(extent(i), dim, &[0, 0, 0, 0], format);
       img.texture_descriptor.usage = TextureUsages::COPY_DST
@@ -123,7 +127,7 @@ impl<Tag: TagLike> FromWorld for ImageDownscalerPipeline<Tag> {
         visibility: ShaderStages::COMPUTE,
         ty: BindingType::StorageTexture {
           access: StorageTextureAccess::ReadOnly,
-          format: TextureFormat::R32Float,
+          format: TEXTURE_FORMAT,
           view_dimension: TextureViewDimension::D2,
         },
         count: None,
@@ -133,7 +137,7 @@ impl<Tag: TagLike> FromWorld for ImageDownscalerPipeline<Tag> {
         visibility: ShaderStages::COMPUTE,
         ty: BindingType::StorageTexture {
           access: StorageTextureAccess::WriteOnly,
-          format: TextureFormat::R32Float,
+          format: TEXTURE_FORMAT,
           view_dimension: TextureViewDimension::D2,
         },
         count: None,
@@ -148,7 +152,7 @@ impl<Tag: TagLike> FromWorld for ImageDownscalerPipeline<Tag> {
 
     let shader = world
       .resource::<AssetServer>()
-      .load("shaders/downscale.wgsl");
+      .load("shaders/downscaler.wgsl");
     let pipeline_cache = world.resource::<PipelineCache>();
     let pipeline_id =
       pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
@@ -171,12 +175,23 @@ impl<Tag: TagLike> FromWorld for ImageDownscalerPipeline<Tag> {
 }
 
 #[derive(Debug, Clone)]
-pub struct ImageDownscalerPlugin<Tag: TagLike> {
+pub struct DownscalerPlugin<Tag: TagLike> {
   initial_size: (u32, u32),
   marker: PhantomData<Tag>,
 }
 
-impl<Tag: TagLike> ImageDownscalerPlugin<Tag> {
+impl<Tag: TagLike> Default for DownscalerPlugin<Tag> {
+  fn default() -> Self {
+    let initial_size = (512, 512);
+    let marker = PhantomData;
+    Self {
+      initial_size,
+      marker,
+    }
+  }
+}
+
+impl<Tag: TagLike> DownscalerPlugin<Tag> {
   pub fn new(initial_size: (u32, u32)) -> Self {
     let marker = PhantomData;
     Self {
@@ -186,8 +201,9 @@ impl<Tag: TagLike> ImageDownscalerPlugin<Tag> {
   }
 }
 
-impl<Tag: TagLike> Plugin for ImageDownscalerPlugin<Tag> {
+impl<Tag: TagLike> Plugin for DownscalerPlugin<Tag> {
   fn build(&self, app: &mut App) {
+    app.add_system(inspect_downscaler::<Tag>);
     let mut images = app.world.resource_mut::<Assets<Image>>();
     let image_downscale =
       ImageDownscaler::<Tag>::new(self.initial_size, &mut images);
@@ -301,4 +317,23 @@ impl<Tag: TagLike> render_graph::Node for ImageDownscalerNode<Tag> {
 
     Ok(())
   }
+}
+
+fn inspect_downscaler<Tag: TagLike>(
+  mut textures: ResMut<EguiUserTextures>,
+  mut ctx: Query<&mut EguiContext>,
+  downscaler: Res<ImageDownscaler<Tag>>,
+) {
+  let mut binding = ctx.single_mut();
+  let ctx = binding.get_mut();
+  egui::Window::new("Downscaler").show(ctx, |ui| {
+    ui.horizontal(|ui| {
+      for handle in &downscaler.textures {
+        let texture_id = textures
+          .image_id(handle)
+          .unwrap_or_else(|| textures.add_image(handle.clone_weak()));
+        ui.image(texture_id, [64.0, 64.0]);
+      }
+    });
+  });
 }
