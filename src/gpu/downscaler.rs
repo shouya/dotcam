@@ -352,12 +352,16 @@ fn inspect_ui(
   egui::Window::new("Downscaler").show(ctx, |ui| {
     for (entity, downscaler) in downscaler_q.iter() {
       ui.horizontal(|ui| {
-        for handle in downscaler.stages() {
+        for (i, handle) in downscaler.stages().iter().enumerate() {
           let texture_id = textures
             .image_id(handle)
             .unwrap_or_else(|| textures.add_image(handle.clone_weak()));
 
-          ui.image(texture_id, [64.0, 64.0]);
+          // show 1/4 size of the original image
+          let w = (downscaler.input_size.0 >> i) >> 2;
+          let h = (downscaler.input_size.1 >> i) >> 2;
+
+          ui.image(texture_id, [w as f32, h as f32]);
         }
         ui.vertical(|ui| {
           ui.label(format!("{:?}", entity));
