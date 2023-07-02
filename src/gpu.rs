@@ -1,9 +1,13 @@
-use bevy::prelude::{App, Assets, Image, Plugin, Res, ResMut};
-use safe_transmute::transmute_to_bytes;
+use bevy::{
+  prelude::{
+    resource_changed, App, Assets, Commands, Image, IntoSystemConfig, Plugin,
+    Query, Res, ResMut,
+  },
+  render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+};
 
-use crate::camera_feed::CameraStream;
-
-use self::downscaler::{DownscalerPlugin, ImageDownscaler, TagLike};
+use self::downscaler::{Downscaler, DownscalerPlugin};
+use crate::{camera_feed::CameraStream, StaticParam};
 
 mod downscaler;
 mod gradiator;
@@ -11,35 +15,67 @@ mod gradiator;
 #[derive(Default)]
 pub struct DotCamPlugin;
 
-#[derive(Default, Clone)]
-struct CameraDownscalerTag;
-
-impl TagLike for CameraDownscalerTag {}
-
 impl Plugin for DotCamPlugin {
   fn build(&self, app: &mut App) {
-    let downscaler = DownscalerPlugin::<CameraDownscalerTag>::default();
-
     app
-      .add_plugin(downscaler)
-      .add_system(copy_camera_stream_to_downscaler);
+      .add_plugin(DownscalerPlugin::default())
+      .add_startup_system(setup_downscaler)
+      .add_system(
+        copy_camera_stream_to_downscaler
+          .run_if(resource_changed::<CameraStream>()),
+      );
   }
+}
+
+fn setup_downscaler(mut commands: Commands, static_param: Res<StaticParam>) {
+  let w = static_param.width() as u32;
+  let h = static_param.height() as u32;
+  let downscaler = Downscaler::new(3, (w, h));
+  commands.spawn(downscaler);
 }
 
 fn copy_camera_stream_to_downscaler(
   mut images: ResMut<Assets<Image>>,
-  downscaler: Res<ImageDownscaler<CameraDownscalerTag>>,
+  mut q: Query<&mut Downscaler>,
   camera_stream_res: Res<CameraStream>,
 ) {
   let camera_stream = images.get(&camera_stream_res.0).unwrap();
-  let data = vec_u8_to_vec_f32norm(&camera_stream.data);
-  let downscaler_input = images.get_mut(&downscaler.textures[0]).unwrap();
+  let mut downscaler = q.single_mut();
 
-  downscaler_input
-    .data
-    .copy_from_slice(transmute_to_bytes(data.as_slice()));
+  // still computing, let's wait till next frame
+  if downscaler.is_initialized() && !downscaler.is_ready() {
+    return;
+  }
+
+  let data = vec_u8_to_vec_f32norm(&camera_stream.data);
+
+  if !downscaler.is_initialized() {
+    let w = camera_stream.texture_descriptor.size.width;
+    let h = camera_stream.texture_descriptor.size.height;
+    let size = Extent3d {
+      width: w,
+      height: h,
+      depth_or_array_layers: 1,
+    };
+    let dimension = TextureDimension::D2;
+    let format = TextureFormat::R32Float;
+    let image = Image::new(size, dimension, data, format);
+    downscaler.init(image, &mut images);
+    return;
+  };
+
+  if !downscaler.is_ready() {
+    return;
+  }
+
+  downscaler.set_input(&data, &mut images);
 }
 
-pub fn vec_u8_to_vec_f32norm(src: &[u8]) -> Vec<f32> {
-  src.iter().map(|&byte| byte as f32 / 255.0).collect()
+// return bytes
+pub fn vec_u8_to_vec_f32norm(src: &[u8]) -> Vec<u8> {
+  src
+    .iter()
+    .map(|&byte| byte as f32 / 255.0)
+    .flat_map(|f| f.to_le_bytes())
+    .collect()
 }

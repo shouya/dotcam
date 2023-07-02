@@ -1,127 +1,147 @@
-#![allow(unused)]
-
-use std::{array, borrow::Cow, fmt::Debug, marker::PhantomData};
+use std::{borrow::Cow, fmt::Debug, sync::Arc};
 
 use bevy::{
   prelude::{
-    App, AssetServer, Assets, Commands, FromWorld, Handle, Image,
-    IntoSystemConfig, Plugin, Query, Res, ResMut, Resource,
+    default, App, AssetServer, Assets, Changed, Commands, Component, Entity,
+    Handle, Image, IntoSystemConfig, Plugin, Query, Res, ResMut, Resource,
+    World,
   },
   render::{
-    extract_resource::{ExtractResource, ExtractResourcePlugin},
-    main_graph::node::CAMERA_DRIVER,
+    extract_component::{ExtractComponent, ExtractComponentPlugin},
+    main_graph,
     render_asset::RenderAssets,
-    render_graph::{self, NodeLabel, RenderGraph},
+    render_graph::{Node, NodeRunError, RenderGraph, RenderGraphContext},
     render_resource::{
       BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
       BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource,
-      BindingType, CachedComputePipelineId, ComputePassDescriptor,
-      ComputePipelineDescriptor, Extent3d, PipelineCache, ShaderStages,
-      StorageTextureAccess, TextureDimension, TextureFormat, TextureUsages,
-      TextureViewDimension,
+      BindingType, CachedComputePipelineId, ComputePipelineDescriptor,
+      Extent3d, PipelineCache, ShaderDefVal, ShaderStages,
+      StorageTextureAccess, TextureFormat, TextureUsages, TextureViewDimension,
     },
-    renderer::RenderDevice,
+    renderer::{RenderContext, RenderDevice},
     RenderApp, RenderSet,
   },
+  utils::HashMap,
 };
 use bevy_egui::{EguiContext, EguiUserTextures};
 use bevy_inspector_egui::egui;
+use crossbeam::atomic::AtomicCell;
 
-const NUM_ITER: usize = 3;
-const NUM_WORKGROUPS: u32 = 8;
-
+// the input image must be of format R32Float
 const TEXTURE_FORMAT: TextureFormat = TextureFormat::R32Float;
 
-pub trait TagLike: Send + Sync + Clone + Default + 'static {}
+// the number of workgroups to use in each dimension
+const NUM_WORKGROUPS: u32 = 8;
 
-#[derive(Debug, Clone, Resource, ExtractResource)]
-pub struct ImageDownscaler<Tag: TagLike> {
-  pub sizes: [(u32, u32); NUM_ITER + 1],
-  // input is always at textures[0]
-  pub textures: [Handle<Image>; NUM_ITER + 1],
-  marker: PhantomData<Tag>,
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum DownscalerState {
+  Unstarted,
+  Computing,
+  Ready,
 }
 
-impl<Tag: TagLike> ImageDownscaler<Tag> {
-  pub fn new(initial_size: (u32, u32), images: &mut Assets<Image>) -> Self {
-    let extent = Extent3d {
-      width: initial_size.0,
-      height: initial_size.1,
-      depth_or_array_layers: 1,
-    };
+#[derive(Component, ExtractComponent, Clone)]
+pub struct Downscaler {
+  input_size: (u32, u32),
+  iterations: usize,
+  stages: Vec<Handle<Image>>,
+  state: Arc<AtomicCell<DownscalerState>>,
+}
 
-    let format = TEXTURE_FORMAT;
-    let dim = TextureDimension::D2;
-    let mut img = Image::new_fill(extent, dim, &[0, 0, 0, 0], format);
-
-    let input_image_handle = images.add(img);
-
-    Self::new_with_input_image(input_image_handle, images)
-  }
-
-  pub fn new_with_input_image(
-    input_image_handle: Handle<Image>,
-    images: &mut Assets<Image>,
-  ) -> Self {
-    let mut input_image = images.get_mut(&input_image_handle).unwrap();
-    let format = input_image.texture_descriptor.format;
-    let initial_size = (
-      input_image.texture_descriptor.size.width,
-      input_image.texture_descriptor.size.height,
-    );
-
-    input_image.texture_descriptor.usage = TextureUsages::COPY_DST
-      | TextureUsages::STORAGE_BINDING
-      | TextureUsages::TEXTURE_BINDING;
-
-    let size = |i| (initial_size.0 >> i, initial_size.1 >> i);
-
-    let extent = |i| Extent3d {
-      width: size(i).0,
-      height: size(i).1,
-      depth_or_array_layers: 1,
-    };
-
-    let mut image = |i| {
-      let dim = TextureDimension::D2;
-      let mut img = Image::new_fill(extent(i), dim, &[0, 0, 0, 0], format);
-      img.texture_descriptor.usage = TextureUsages::COPY_DST
-        | TextureUsages::STORAGE_BINDING
-        | TextureUsages::TEXTURE_BINDING;
-      images.add(img)
-    };
-
-    let sizes = [size(0), size(1), size(2), size(3)];
-    let textures = [input_image_handle, image(1), image(2), image(3)];
-    let marker = PhantomData;
-
+impl Downscaler {
+  pub fn new(iterations: usize, input_size: (u32, u32)) -> Self {
     Self {
-      sizes,
-      textures,
-      marker,
+      input_size,
+      iterations,
+      stages: Vec::with_capacity(iterations + 1),
+      state: Arc::new(AtomicCell::new(DownscalerState::Unstarted)),
     }
   }
 
-  pub fn input(&self) -> Handle<Image> {
-    self.textures[0].clone()
+  pub fn init(&mut self, mut input: Image, images: &mut Assets<Image>) {
+    if self.is_initialized() {
+      panic!("Downscaler is already initialized");
+    }
+
+    let usages = TextureUsages::COPY_DST
+      | TextureUsages::STORAGE_BINDING
+      | TextureUsages::TEXTURE_BINDING;
+
+    let size = input.texture_descriptor.size;
+    let dimension = input.texture_descriptor.dimension;
+    let format = input.texture_descriptor.format;
+
+    input.texture_descriptor.usage = usages;
+    self.stages = vec![images.add(input)];
+
+    for i in 1..=self.iterations {
+      let size = Extent3d {
+        width: size.width >> i,
+        height: size.height >> i,
+        depth_or_array_layers: 1,
+      };
+
+      let mut image = Image::new_fill(size, dimension, &[0; 4], format);
+      image.texture_descriptor.usage = usages;
+
+      self.stages.push(images.add(image));
+    }
+
+    self.state.store(DownscalerState::Computing);
   }
 
-  pub fn output(&self) -> Handle<Image> {
-    self.textures[NUM_ITER].clone()
+  pub fn stages(&self) -> &[Handle<Image>] {
+    &self.stages
+  }
+
+  pub fn is_ready(&self) -> bool {
+    self.state.load() == DownscalerState::Ready
+  }
+
+  pub fn is_initialized(&self) -> bool {
+    !self.stages.is_empty()
+  }
+
+  pub fn set_input(&mut self, data: &[u8], images: &mut Assets<Image>) {
+    if self.stages.is_empty() {
+      panic!("Downscaler un initialized!");
+    }
+
+    let image = images.get_mut(&self.stages[0]).unwrap();
+    image.data.copy_from_slice(data);
+    self.state.store(DownscalerState::Computing);
+  }
+
+  fn set_ready(&self) {
+    self
+      .state
+      .compare_exchange(DownscalerState::Computing, DownscalerState::Ready)
+      .unwrap();
   }
 }
 
-#[derive(Debug, Clone, Resource)]
-struct ImageDownscalerPipeline<Tag: TagLike> {
-  marker: PhantomData<Tag>,
+#[derive(Resource, Default)]
+struct DownscalerPipelines {
+  // to prevent the pipeline from being created every time note: we
+  // never delete pipelines, so this can grow indefinitely if there is a
+  // dynamic number of downscalers.
+  store: HashMap<Entity, DownscalerPipeline>,
+}
+
+#[derive(Component, Clone)]
+struct DownscalerPipeline {
   bind_group_layout: BindGroupLayout,
   pipeline_id: CachedComputePipelineId,
 }
 
-impl<Tag: TagLike> FromWorld for ImageDownscalerPipeline<Tag> {
-  fn from_world(world: &mut bevy::prelude::World) -> Self {
+impl DownscalerPipeline {
+  fn new(
+    _downscaler: &Downscaler,
+    render_device: &RenderDevice,
+    asset_server: &AssetServer,
+    pipeline_cache: &PipelineCache,
+  ) -> Self {
     let bind_group_layout = {
-      let render_device = world.resource::<RenderDevice>();
       let input_texture = BindGroupLayoutEntry {
         binding: 0,
         visibility: ShaderStages::COMPUTE,
@@ -146,114 +166,49 @@ impl<Tag: TagLike> FromWorld for ImageDownscalerPipeline<Tag> {
         label: None,
         entries: &[input_texture, output_texture],
       };
-
       render_device.create_bind_group_layout(&descriptor)
     };
 
-    let shader = world
-      .resource::<AssetServer>()
-      .load("shaders/downscaler.wgsl");
-    let pipeline_cache = world.resource::<PipelineCache>();
+    let shader = asset_server.load("shaders/downscaler.wgsl");
+    let shader_defs =
+      vec![ShaderDefVal::UInt("WG_SIZE".to_string(), NUM_WORKGROUPS)];
+
     let pipeline_id =
       pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
         label: None,
         layout: vec![bind_group_layout.clone()],
         push_constant_ranges: Vec::new(),
         shader,
-        shader_defs: vec![],
+        shader_defs: shader_defs,
         entry_point: Cow::from("downscale"),
       });
 
-    let marker = PhantomData;
-
     Self {
-      marker,
       bind_group_layout,
       pipeline_id,
     }
   }
 }
 
-#[derive(Debug, Clone)]
-pub struct DownscalerPlugin<Tag: TagLike> {
-  initial_size: (u32, u32),
-  marker: PhantomData<Tag>,
+#[derive(Component, Default)]
+struct DownscalerBindGroups {
+  groups: Vec<BindGroup>,
 }
 
-impl<Tag: TagLike> Default for DownscalerPlugin<Tag> {
-  fn default() -> Self {
-    let initial_size = (512, 512);
-    let marker = PhantomData;
-    Self {
-      initial_size,
-      marker,
-    }
-  }
-}
-
-impl<Tag: TagLike> DownscalerPlugin<Tag> {
-  pub fn new(initial_size: (u32, u32)) -> Self {
-    let marker = PhantomData;
-    Self {
-      initial_size,
-      marker,
-    }
-  }
-}
-
-impl<Tag: TagLike> Plugin for DownscalerPlugin<Tag> {
-  fn build(&self, app: &mut App) {
-    app.add_system(inspect_downscaler::<Tag>);
-    let mut images = app.world.resource_mut::<Assets<Image>>();
-    let image_downscale =
-      ImageDownscaler::<Tag>::new(self.initial_size, &mut images);
-
-    app.insert_resource(image_downscale);
-    app.add_plugin(ExtractResourcePlugin::<ImageDownscaler<Tag>>::default());
-
-    let render_app = app.sub_app_mut(RenderApp);
-    render_app
-      .init_resource::<ImageDownscalerPipeline<Tag>>()
-      .add_system(queue_bind_group::<Tag>.in_set(RenderSet::Queue));
-
-    let mut render_graph = render_app.world.resource_mut::<RenderGraph>();
-
-    let mut node_id: NodeLabel = CAMERA_DRIVER.into();
-
-    // add a chain of downscale nodes, ending at CAMERA_DRIVER.
-    for i in (0..NUM_ITER).rev() {
-      let new_node_id = render_graph.add_node(
-        format!("image_downscale_{}", i),
-        ImageDownscalerNode::<Tag>::new(i),
-      );
-      render_graph.add_node_edge(new_node_id, node_id);
-      node_id = new_node_id.into();
-    }
-  }
-}
-
-#[derive(Debug, Clone, Resource)]
-struct ImageDownscalerBindGroup<Tag: TagLike> {
-  bind_groups: [BindGroup; NUM_ITER],
-  marker: PhantomData<Tag>,
-}
-
-fn queue_bind_group<Tag: TagLike>(
-  mut commands: Commands,
+fn queue_bind_groups(
   render_device: Res<RenderDevice>,
   gpu_images: Res<RenderAssets<Image>>,
-  downscaler: Res<ImageDownscaler<Tag>>,
-  pipeline: Res<ImageDownscalerPipeline<Tag>>,
+  mut q: Query<(&Downscaler, &mut DownscalerBindGroups, &DownscalerPipeline)>,
 ) {
-  let make_bind_group_entry = |handle, i| BindGroupEntry {
-    binding: i,
-    resource: BindingResource::TextureView(&gpu_images[handle].texture_view),
-  };
+  let make_bind_group = |pipeline: &DownscalerPipeline, textures: &[_], i| {
+    let make_bind_group_entry = |handle, i| BindGroupEntry {
+      binding: i,
+      resource: BindingResource::TextureView(&gpu_images[handle].texture_view),
+    };
 
-  let bind_groups = array::from_fn(|i| {
     let bind_group_entries = vec![
-      make_bind_group_entry(&downscaler.textures[i], 0),
-      make_bind_group_entry(&downscaler.textures[i + 1], 1),
+      make_bind_group_entry(&textures[i], 0),
+      make_bind_group_entry(&textures[i + 1], 1),
     ];
 
     render_device.create_bind_group(&BindGroupDescriptor {
@@ -261,79 +216,154 @@ fn queue_bind_group<Tag: TagLike>(
       layout: &pipeline.bind_group_layout,
       entries: &bind_group_entries,
     })
-  });
-
-  let resource = ImageDownscalerBindGroup::<Tag> {
-    bind_groups,
-    marker: PhantomData,
   };
-  commands.insert_resource(resource);
-}
 
-#[derive(Default)]
-struct ImageDownscalerNode<Tag: TagLike> {
-  iteration: usize,
-  marker: PhantomData<Tag>,
-}
-impl<Tag: TagLike> ImageDownscalerNode<Tag> {
-  fn new(iteration: usize) -> Self {
-    let marker = PhantomData;
-    Self { iteration, marker }
+  for (downscaler, mut downscaler_bind_groups, pipeline) in q.iter_mut() {
+    let bind_groups = (0..downscaler.iterations)
+      .map(|i| make_bind_group(pipeline, &downscaler.stages, i))
+      .collect();
+
+    downscaler_bind_groups.groups = bind_groups;
   }
 }
 
-impl<Tag: TagLike> render_graph::Node for ImageDownscalerNode<Tag> {
+struct DownscalerNode;
+
+impl Node for DownscalerNode {
   fn run(
     &self,
-    _graph: &mut render_graph::RenderGraphContext,
-    render_context: &mut bevy::render::renderer::RenderContext,
-    world: &bevy::prelude::World,
-  ) -> Result<(), render_graph::NodeRunError> {
+    _graph: &mut RenderGraphContext,
+    render_context: &mut RenderContext,
+    world: &World,
+  ) -> Result<(), NodeRunError> {
     let pipeline_cache = world.resource::<PipelineCache>();
-    let pipeline = world.resource::<ImageDownscalerPipeline<Tag>>();
-    let downscale = world.resource::<ImageDownscaler<Tag>>();
-    let ImageDownscalerBindGroup { bind_groups, .. } =
-      world.resource::<ImageDownscalerBindGroup<Tag>>();
 
-    #[rustfmt::skip]
-    let Some(pipeline) =
-      pipeline_cache.get_compute_pipeline(pipeline.pipeline_id)
-    else {
-      println!("Pipeline not available");
-      return Ok(());
-    };
+    // TODO: make this a query to improve efficiency
+    for entity in world.iter_entities() {
+      if !entity.contains::<Downscaler>() {
+        continue;
+      }
 
-    let mut pass = render_context
-      .command_encoder()
-      .begin_compute_pass(&ComputePassDescriptor::default());
+      let downscaler = entity.get::<Downscaler>().unwrap();
+      if downscaler.is_ready() {
+        continue;
+      }
 
-    pass.set_bind_group(0, &bind_groups[self.iteration], &[]);
-    pass.set_pipeline(pipeline);
-    pass.dispatch_workgroups(
-      downscale.sizes[self.iteration].0 / NUM_WORKGROUPS,
-      downscale.sizes[self.iteration].1 / NUM_WORKGROUPS,
-      1,
-    );
+      #[rustfmt::skip]
+      let Some(downscaler_bind_groups) = entity.get::<DownscalerBindGroups>()
+      else {continue};
+      #[rustfmt::skip]
+      let Some(downscaler_pipeline) = entity.get::<DownscalerPipeline>()
+      else {continue;};
+
+      #[rustfmt::skip]
+      let Some(pipeline) =
+        pipeline_cache.get_compute_pipeline(downscaler_pipeline.pipeline_id)
+      else {continue};
+
+      let bind_groups = &downscaler_bind_groups.groups;
+
+      #[allow(clippy::needless_range_loop)]
+      for i in 0..downscaler.iterations {
+        let mut pass = render_context
+          .command_encoder()
+          .begin_compute_pass(&default());
+        pass.set_bind_group(0, &bind_groups[i], &[]);
+        pass.set_pipeline(pipeline);
+
+        let wg_size_0 = (downscaler.input_size.0 >> (i + 1)) / NUM_WORKGROUPS;
+        let wg_size_1 = (downscaler.input_size.1 >> (i + 1)) / NUM_WORKGROUPS;
+        pass.dispatch_workgroups(wg_size_0, wg_size_1, 1);
+      }
+
+      downscaler.set_ready();
+    }
 
     Ok(())
   }
 }
 
-fn inspect_downscaler<Tag: TagLike>(
+fn prepare_pipeline(
+  mut commands: Commands,
+  render_device: Res<RenderDevice>,
+  asset_server: Res<AssetServer>,
+  pipeline_cache: Res<PipelineCache>,
+  mut pipelines: ResMut<DownscalerPipelines>,
+  q: Query<(Entity, &Downscaler), Changed<Downscaler>>,
+) {
+  for (entity, downscaler) in q.iter() {
+    if downscaler.is_ready() {
+      continue;
+    }
+
+    let pipeline = pipelines.store.entry(entity).or_insert_with(|| {
+      DownscalerPipeline::new(
+        downscaler,
+        &render_device,
+        &asset_server,
+        &pipeline_cache,
+      )
+    });
+
+    let bind_groups = DownscalerBindGroups::default();
+
+    commands
+      .entity(entity)
+      .insert((pipeline.clone(), bind_groups));
+  }
+}
+
+pub struct DownscalerPlugin {
+  inspect_ui: bool,
+}
+
+impl Default for DownscalerPlugin {
+  fn default() -> Self {
+    Self { inspect_ui: true }
+  }
+}
+
+impl Plugin for DownscalerPlugin {
+  fn build(&self, app: &mut App) {
+    app.add_plugin(ExtractComponentPlugin::<Downscaler>::default());
+
+    if self.inspect_ui {
+      app.add_system(inspect_ui);
+    }
+
+    let render_app = app.sub_app_mut(RenderApp);
+    render_app.init_resource::<DownscalerPipelines>();
+    render_app.add_system(prepare_pipeline.in_set(RenderSet::Prepare));
+    render_app.add_system(queue_bind_groups.in_set(RenderSet::Queue));
+
+    let mut render_graph = render_app.world.resource_mut::<RenderGraph>();
+    render_graph.add_node("downscaler", DownscalerNode);
+    render_graph.add_node_edge("downscaler", main_graph::node::CAMERA_DRIVER)
+  }
+}
+
+fn inspect_ui(
   mut textures: ResMut<EguiUserTextures>,
   mut ctx: Query<&mut EguiContext>,
-  downscaler: Res<ImageDownscaler<Tag>>,
+  downscaler_q: Query<(Entity, &Downscaler)>,
 ) {
   let mut binding = ctx.single_mut();
   let ctx = binding.get_mut();
   egui::Window::new("Downscaler").show(ctx, |ui| {
-    ui.horizontal(|ui| {
-      for handle in &downscaler.textures {
-        let texture_id = textures
-          .image_id(handle)
-          .unwrap_or_else(|| textures.add_image(handle.clone_weak()));
-        ui.image(texture_id, [64.0, 64.0]);
-      }
-    });
+    for (entity, downscaler) in downscaler_q.iter() {
+      ui.horizontal(|ui| {
+        for handle in downscaler.stages() {
+          let texture_id = textures
+            .image_id(handle)
+            .unwrap_or_else(|| textures.add_image(handle.clone_weak()));
+
+          ui.image(texture_id, [64.0, 64.0]);
+        }
+        ui.vertical(|ui| {
+          ui.label(format!("{:?}", entity));
+          ui.label(format!("{:?}", downscaler.state.load()));
+        });
+      });
+    }
   });
 }
