@@ -30,7 +30,7 @@ impl Plugin for DotCamPlugin {
 fn setup_downscaler(mut commands: Commands, static_param: Res<StaticParam>) {
   let w = static_param.width() as u32;
   let h = static_param.height() as u32;
-  let downscaler = Downscaler::new(3, (w, h));
+  let downscaler = Downscaler::new(4, (w, h));
   commands.spawn(downscaler);
 }
 
@@ -76,6 +76,6 @@ pub fn vec_u8_to_vec_f32norm(src: &[u8]) -> Vec<u8> {
   src
     .iter()
     .map(|&byte| byte as f32 / 255.0)
-    .flat_map(|f| f.to_le_bytes())
+    .flat_map(|f| f.to_ne_bytes())
     .collect()
 }

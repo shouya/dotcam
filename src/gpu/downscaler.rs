@@ -358,8 +358,8 @@ fn inspect_ui(
             .unwrap_or_else(|| textures.add_image(handle.clone_weak()));
 
           // show 1/4 size of the original image
-          let w = (downscaler.input_size.0 >> i) >> 2;
-          let h = (downscaler.input_size.1 >> i) >> 2;
+          let w = ((downscaler.input_size.0 >> i) >> 2).max(1);
+          let h = ((downscaler.input_size.1 >> i) >> 2).max(1);
 
           ui.image(texture_id, [w as f32, h as f32]);
         }
