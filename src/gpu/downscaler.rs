@@ -31,7 +31,7 @@ use crossbeam::atomic::AtomicCell;
 const TEXTURE_FORMAT: TextureFormat = TextureFormat::R32Float;
 
 // the number of workgroups to use in each dimension
-const NUM_WORKGROUPS: u32 = 8;
+const WORKGROUP_SIZE: u32 = 8;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum DownscalerState {
@@ -171,7 +171,7 @@ impl DownscalerPipeline {
 
     let shader = asset_server.load("shaders/downscaler.wgsl");
     let shader_defs =
-      vec![ShaderDefVal::UInt("WG_SIZE".to_string(), NUM_WORKGROUPS)];
+      vec![ShaderDefVal::UInt("WG_SIZE".to_string(), WORKGROUP_SIZE)];
 
     let pipeline_id =
       pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
@@ -179,7 +179,7 @@ impl DownscalerPipeline {
         layout: vec![bind_group_layout.clone()],
         push_constant_ranges: Vec::new(),
         shader,
-        shader_defs: shader_defs,
+        shader_defs,
         entry_point: Cow::from("downscale"),
       });
 
@@ -271,8 +271,8 @@ impl Node for DownscalerNode {
         pass.set_bind_group(0, &bind_groups[i], &[]);
         pass.set_pipeline(pipeline);
 
-        let wg_size_0 = (downscaler.input_size.0 >> (i + 1)) / NUM_WORKGROUPS;
-        let wg_size_1 = (downscaler.input_size.1 >> (i + 1)) / NUM_WORKGROUPS;
+        let wg_size_0 = (downscaler.input_size.0 >> (i + 1)) / WORKGROUP_SIZE;
+        let wg_size_1 = (downscaler.input_size.1 >> (i + 1)) / WORKGROUP_SIZE;
         pass.dispatch_workgroups(wg_size_0, wg_size_1, 1);
       }
 
