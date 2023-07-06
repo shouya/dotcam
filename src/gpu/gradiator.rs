@@ -32,6 +32,8 @@ use bevy::{
   },
   utils::HashMap,
 };
+use bevy_egui::{EguiContext, EguiUserTextures};
+use bevy_inspector_egui::egui;
 
 use super::downscaler::{Downscaler, DownscalerPlugin};
 
@@ -72,10 +74,21 @@ impl Gradiator {
   pub fn input(&self) -> &Handle<Image> {
     &self.input
   }
+
+  pub fn gradient(&self) -> &Handle<Image> {
+    &self.gradient
+  }
 }
 
-#[derive(Default)]
-pub struct GradiatorPlugin;
+pub struct GradiatorPlugin {
+  inspect_ui: bool,
+}
+
+impl Default for GradiatorPlugin {
+  fn default() -> Self {
+    Self { inspect_ui: true }
+  }
+}
 
 impl Plugin for GradiatorPlugin {
   fn build(&self, app: &mut App) {
@@ -83,6 +96,10 @@ impl Plugin for GradiatorPlugin {
       .add_plugin(ExtractComponentPlugin::<Gradiator>::default())
       .add_plugin(DownscalerPlugin::default())
       .add_system(generate_downscaler);
+
+    if self.inspect_ui {
+      app.add_system(inspect_ui);
+    }
 
     let render_app = app.sub_app_mut(RenderApp);
     render_app
@@ -253,7 +270,7 @@ impl GradiatorPipeline {
     let pipeline_desc = ComputePipelineDescriptor {
       label: Some("gradiator".into()),
       layout: vec![setting_layout.clone(), context_layout.clone()],
-      shader: asset_server.load("gradiator.wgsl"),
+      shader: asset_server.load("shaders/gradiator.wgsl"),
       shader_defs,
       entry_point: "calc_gradient".into(),
       push_constant_ranges: vec![],
@@ -405,4 +422,28 @@ impl Node for GradiatorNode {
 
     Ok(())
   }
+}
+
+fn inspect_ui(
+  mut textures: ResMut<EguiUserTextures>,
+  mut ctx: Query<&mut EguiContext>,
+  gradiator_q: Query<&Gradiator>,
+) {
+  let mut binding = ctx.single_mut();
+  let ctx = binding.get_mut();
+  let mut texture_id = |handle| {
+    textures
+      .image_id(handle)
+      .unwrap_or_else(|| textures.add_image(handle.clone_weak()))
+  };
+  egui::Window::new("Gradiator").show(ctx, |ui| {
+    for gradiator in gradiator_q.iter() {
+      ui.horizontal(|ui| {
+        let input_handle = gradiator.input();
+        let gradient_handle = gradiator.gradient();
+        ui.image(texture_id(input_handle), [100.0; 2]);
+        ui.image(texture_id(gradient_handle), [100.0; 2]);
+      });
+    }
+  });
 }

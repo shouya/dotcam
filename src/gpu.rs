@@ -18,7 +18,7 @@ pub struct DotCamPlugin;
 impl Plugin for DotCamPlugin {
   fn build(&self, app: &mut App) {
     app
-      .add_plugin(GradiatorPlugin)
+      .add_plugin(GradiatorPlugin::default())
       .add_startup_system(setup)
       .add_system(
         copy_camera_stream_to_gradiator
