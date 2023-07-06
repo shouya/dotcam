@@ -85,6 +85,7 @@ impl Downscaler {
     &self.stages
   }
 
+  #[allow(unused)]
   pub fn input(&self) -> &Handle<Image> {
     &self.stages[0]
   }

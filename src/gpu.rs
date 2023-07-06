@@ -6,7 +6,7 @@ use bevy::{
   render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 
-use self::downscaler::{Downscaler, DownscalerPlugin};
+use self::gradiator::{Gradiator, GradiatorPlugin};
 use crate::camera_feed::CameraStream;
 
 mod downscaler;
@@ -18,10 +18,10 @@ pub struct DotCamPlugin;
 impl Plugin for DotCamPlugin {
   fn build(&self, app: &mut App) {
     app
-      .add_plugin(DownscalerPlugin::default())
-      .add_startup_system(setup_downscaler)
+      .add_plugin(GradiatorPlugin)
+      .add_startup_system(setup)
       .add_system(
-        copy_camera_stream_to_downscaler
+        copy_camera_stream_to_gradiator
           .run_if(resource_changed::<CameraStream>()),
       );
   }
@@ -30,14 +30,14 @@ impl Plugin for DotCamPlugin {
 #[derive(Component)]
 struct CameraPipeline;
 
-fn setup_downscaler(mut commands: Commands) {
+fn setup(mut commands: Commands) {
   commands.spawn(CameraPipeline);
 }
 
-fn copy_camera_stream_to_downscaler(
+fn copy_camera_stream_to_gradiator(
   mut commands: Commands,
   mut images: ResMut<Assets<Image>>,
-  mut q: Query<(Entity, Option<&mut Downscaler>), With<CameraPipeline>>,
+  mut q: Query<(Entity, Option<&mut Gradiator>), With<CameraPipeline>>,
   camera_stream_res: Res<CameraStream>,
 ) {
   let camera_stream = images.get(&camera_stream_res.0).unwrap();
@@ -61,7 +61,7 @@ fn copy_camera_stream_to_downscaler(
       let handle = images.add(image);
       commands
         .entity(entity)
-        .insert(Downscaler::new(3, handle, &mut images));
+        .insert(Gradiator::new(handle, &mut images));
     }
     Some(downscaler) => {
       let buffer = &mut images.get_mut(downscaler.input()).unwrap().data;

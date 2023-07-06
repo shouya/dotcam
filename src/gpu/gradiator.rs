@@ -24,7 +24,7 @@ use bevy::{
       BindGroupLayoutEntry, BindingResource, BindingType,
       CachedComputePipelineId, ComputePipelineDescriptor, PipelineCache,
       PreparedBindGroup, ShaderDefVal, ShaderStages, StorageTextureAccess,
-      TextureDimension, TextureFormat, TextureViewDimension,
+      TextureDimension, TextureFormat, TextureUsages, TextureViewDimension,
     },
     renderer::{RenderContext, RenderDevice},
     texture::FallbackImage,
@@ -38,26 +38,29 @@ use super::downscaler::{Downscaler, DownscalerPlugin};
 const WORKGROUP_SIZE: u32 = 8;
 const DOWNSCALE_ITERATION: usize = 4;
 const TEXTURE_FORMAT: TextureFormat = TextureFormat::R32Float;
+const GRADIENT_TEXTURE_FORMAT: TextureFormat = TextureFormat::Rg32Float;
 
 #[derive(Clone, Component, ExtractComponent)]
-struct Gradiator {
+pub struct Gradiator {
   size: (u32, u32),
   input: Handle<Image>,
   gradient: Handle<Image>,
 }
 
 impl Gradiator {
-  fn new(input_handle: Handle<Image>, images: &mut Assets<Image>) -> Self {
+  pub fn new(input_handle: Handle<Image>, images: &mut Assets<Image>) -> Self {
     let input = images.get(&input_handle).unwrap();
     assert!(input.texture_descriptor.format == TextureFormat::R32Float);
 
     let size = input.texture_descriptor.size;
-    let gradient = Image::new_fill(
+    let mut gradient = Image::new_fill(
       size,
       TextureDimension::D2,
-      &[0, 0, 0, 0],
-      TextureFormat::Rg32Float,
+      &[0; 8],
+      GRADIENT_TEXTURE_FORMAT,
     );
+
+    gradient.texture_descriptor.usage |= TextureUsages::STORAGE_BINDING;
 
     Self {
       size: (size.width, size.height),
@@ -66,12 +69,13 @@ impl Gradiator {
     }
   }
 
-  fn input(&self) -> &Handle<Image> {
+  pub fn input(&self) -> &Handle<Image> {
     &self.input
   }
 }
 
-struct GradiatorPlugin;
+#[derive(Default)]
+pub struct GradiatorPlugin;
 
 impl Plugin for GradiatorPlugin {
   fn build(&self, app: &mut App) {
@@ -238,8 +242,13 @@ impl GradiatorPipeline {
     let setting_layout = GradiatorSetting::bind_group_layout(render_device);
     let context_layout = GradiatorContext::bind_group_layout(render_device);
 
-    let shader_defs =
-      vec![ShaderDefVal::UInt("WG_SIZE".to_string(), WORKGROUP_SIZE)];
+    let shader_defs = vec![
+      ShaderDefVal::UInt("WG_SIZE".to_string(), WORKGROUP_SIZE),
+      ShaderDefVal::UInt(
+        "DOWNSCALE_ITER".to_string(),
+        DOWNSCALE_ITERATION as u32,
+      ),
+    ];
 
     let pipeline_desc = ComputePipelineDescriptor {
       label: Some("gradiator".into()),
@@ -338,17 +347,17 @@ impl AsBindGroup for GradiatorContext {
         format: TEXTURE_FORMAT,
         view_dimension: TextureViewDimension::D2,
       },
-      count: None,
+      count: Some(((DOWNSCALE_ITERATION + 1) as u32).try_into().unwrap()),
     };
     let output_texture = BindGroupLayoutEntry {
       binding: 1,
       visibility: ShaderStages::COMPUTE,
       ty: BindingType::StorageTexture {
         access: StorageTextureAccess::WriteOnly,
-        format: TEXTURE_FORMAT,
+        format: GRADIENT_TEXTURE_FORMAT,
         view_dimension: TextureViewDimension::D2,
       },
-      count: Some((DOWNSCALE_ITERATION as u32).try_into().unwrap()),
+      count: None,
     };
     let descriptor = BindGroupLayoutDescriptor {
       label: None,
