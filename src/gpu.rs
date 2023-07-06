@@ -1,13 +1,13 @@
 use bevy::{
   prelude::{
-    resource_changed, App, Assets, Commands, Image, IntoSystemConfig, Plugin,
-    Query, Res, ResMut,
+    resource_changed, App, Assets, Commands, Component, Entity, Image,
+    IntoSystemConfig, Plugin, Query, Res, ResMut, With,
   },
   render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 
 use self::downscaler::{Downscaler, DownscalerPlugin};
-use crate::{camera_feed::CameraStream, StaticParam};
+use crate::camera_feed::CameraStream;
 
 mod downscaler;
 mod gradiator;
@@ -27,48 +27,47 @@ impl Plugin for DotCamPlugin {
   }
 }
 
-fn setup_downscaler(mut commands: Commands, static_param: Res<StaticParam>) {
-  let w = static_param.width() as u32;
-  let h = static_param.height() as u32;
-  let downscaler = Downscaler::new(4, (w, h));
-  commands.spawn(downscaler);
+#[derive(Component)]
+struct CameraPipeline;
+
+fn setup_downscaler(mut commands: Commands) {
+  commands.spawn(CameraPipeline);
 }
 
 fn copy_camera_stream_to_downscaler(
+  mut commands: Commands,
   mut images: ResMut<Assets<Image>>,
-  mut q: Query<&mut Downscaler>,
+  mut q: Query<(Entity, Option<&mut Downscaler>), With<CameraPipeline>>,
   camera_stream_res: Res<CameraStream>,
 ) {
   let camera_stream = images.get(&camera_stream_res.0).unwrap();
-  let mut downscaler = q.single_mut();
-
-  // still computing, let's wait till next frame
-  if downscaler.is_initialized() && !downscaler.is_ready() {
-    return;
-  }
+  let (entity, downscaler) = q.single_mut();
 
   let data = vec_u8_to_vec_f32norm(&camera_stream.data);
 
-  if !downscaler.is_initialized() {
-    let w = camera_stream.texture_descriptor.size.width;
-    let h = camera_stream.texture_descriptor.size.height;
-    let size = Extent3d {
-      width: w,
-      height: h,
-      depth_or_array_layers: 1,
-    };
-    let dimension = TextureDimension::D2;
-    let format = TextureFormat::R32Float;
-    let image = Image::new(size, dimension, data, format);
-    downscaler.init(image, &mut images);
-    return;
-  };
-
-  if !downscaler.is_ready() {
-    return;
+  match downscaler {
+    None => {
+      // initialize the downscaler
+      let w = camera_stream.texture_descriptor.size.width;
+      let h = camera_stream.texture_descriptor.size.height;
+      let size = Extent3d {
+        width: w,
+        height: h,
+        depth_or_array_layers: 1,
+      };
+      let dimension = TextureDimension::D2;
+      let format = TextureFormat::R32Float;
+      let image = Image::new(size, dimension, data, format);
+      let handle = images.add(image);
+      commands
+        .entity(entity)
+        .insert(Downscaler::new(3, handle, &mut images));
+    }
+    Some(downscaler) => {
+      let buffer = &mut images.get_mut(downscaler.input()).unwrap().data;
+      buffer.copy_from_slice(&data);
+    }
   }
-
-  downscaler.set_input(&data, &mut images);
 }
 
 // return bytes

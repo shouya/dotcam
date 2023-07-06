@@ -1,9 +1,9 @@
-use std::{borrow::Cow, fmt::Debug, sync::Arc};
+use std::{borrow::Cow, mem::size_of};
 
 use bevy::{
   prelude::{
-    default, App, AssetServer, Assets, Changed, Commands, Component, Entity,
-    Handle, Image, IntoSystemConfig, Plugin, Query, Res, ResMut, Resource,
+    default, App, AssetServer, Assets, Commands, Component, Entity, Handle,
+    Image, IntoSystemConfig, Plugin, Query, Res, ResMut, Resource, Without,
     World,
   },
   render::{
@@ -25,7 +25,6 @@ use bevy::{
 };
 use bevy_egui::{EguiContext, EguiUserTextures};
 use bevy_inspector_egui::egui;
-use crossbeam::atomic::AtomicCell;
 
 // the input image must be of format R32Float
 const TEXTURE_FORMAT: TextureFormat = TextureFormat::R32Float;
@@ -33,98 +32,61 @@ const TEXTURE_FORMAT: TextureFormat = TextureFormat::R32Float;
 // the number of workgroups to use in each dimension
 const WORKGROUP_SIZE: u32 = 8;
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-enum DownscalerState {
-  Unstarted,
-  Computing,
-  Ready,
-}
-
 #[derive(Component, ExtractComponent, Clone)]
 pub struct Downscaler {
   input_size: (u32, u32),
   iterations: usize,
   stages: Vec<Handle<Image>>,
-  state: Arc<AtomicCell<DownscalerState>>,
 }
 
 impl Downscaler {
-  pub fn new(iterations: usize, input_size: (u32, u32)) -> Self {
-    Self {
-      input_size,
-      iterations,
-      stages: Vec::with_capacity(iterations + 1),
-      state: Arc::new(AtomicCell::new(DownscalerState::Unstarted)),
-    }
-  }
-
-  pub fn init(
-    &mut self,
+  pub fn new(
+    iterations: usize,
     input_handle: Handle<Image>,
     images: &mut Assets<Image>,
-  ) {
-    if self.is_initialized() {
-      panic!("Downscaler is already initialized");
-    }
-
+  ) -> Self {
     let usages = TextureUsages::COPY_DST
       | TextureUsages::STORAGE_BINDING
       | TextureUsages::TEXTURE_BINDING;
 
     let input = images.get_mut(&input_handle).unwrap();
 
-    let size = input.texture_descriptor.size;
+    let input_size = input.texture_descriptor.size;
     let dimension = input.texture_descriptor.dimension;
     let format = input.texture_descriptor.format;
 
     // ensure the usages are correct
     input.texture_descriptor.usage = usages;
 
-    self.stages = vec![input_handle];
+    let mut stages = vec![input_handle];
 
-    for i in 1..=self.iterations {
+    for i in 1..=iterations {
       let size = Extent3d {
-        width: size.width >> i,
-        height: size.height >> i,
+        width: input_size.width >> i,
+        height: input_size.height >> i,
         depth_or_array_layers: 1,
       };
 
-      let mut image = Image::new_fill(size, dimension, &[0; 4], format);
+      let mut image =
+        Image::new_fill(size, dimension, &[0; size_of::<f32>()], format);
       image.texture_descriptor.usage = usages;
 
-      self.stages.push(images.add(image));
+      stages.push(images.add(image));
     }
 
-    self.state.store(DownscalerState::Computing);
+    Self {
+      input_size: (input_size.width, input_size.height),
+      iterations,
+      stages,
+    }
   }
 
   pub fn stages(&self) -> &[Handle<Image>] {
     &self.stages
   }
 
-  pub fn is_ready(&self) -> bool {
-    self.state.load() == DownscalerState::Ready
-  }
-
-  pub fn is_initialized(&self) -> bool {
-    !self.stages.is_empty()
-  }
-
-  pub fn set_input(&mut self, data: &[u8], images: &mut Assets<Image>) {
-    if self.stages.is_empty() {
-      panic!("Downscaler un initialized!");
-    }
-
-    let image = images.get_mut(&self.stages[0]).unwrap();
-    image.data.copy_from_slice(data);
-    self.state.store(DownscalerState::Computing);
-  }
-
-  fn set_ready(&self) {
-    self
-      .state
-      .compare_exchange(DownscalerState::Computing, DownscalerState::Ready)
-      .unwrap();
+  pub fn input(&self) -> &Handle<Image> {
+    &self.stages[0]
   }
 }
 
@@ -253,9 +215,6 @@ impl Node for DownscalerNode {
       }
 
       let downscaler = entity.get::<Downscaler>().unwrap();
-      if downscaler.is_ready() {
-        continue;
-      }
 
       #[rustfmt::skip]
       let Some(downscaler_bind_groups) = entity.get::<DownscalerBindGroups>()
@@ -283,8 +242,6 @@ impl Node for DownscalerNode {
         let wg_size_1 = (downscaler.input_size.1 >> (i + 1)) / WORKGROUP_SIZE;
         pass.dispatch_workgroups(wg_size_0, wg_size_1, 1);
       }
-
-      downscaler.set_ready();
     }
 
     Ok(())
@@ -297,13 +254,9 @@ fn prepare_pipeline(
   asset_server: Res<AssetServer>,
   pipeline_cache: Res<PipelineCache>,
   mut pipelines: ResMut<DownscalerPipelines>,
-  q: Query<(Entity, &Downscaler), Changed<Downscaler>>,
+  q: Query<(Entity, &Downscaler), Without<DownscalerPipeline>>,
 ) {
   for (entity, downscaler) in q.iter() {
-    if downscaler.is_ready() {
-      continue;
-    }
-
     let pipeline = pipelines.store.entry(entity).or_insert_with(|| {
       DownscalerPipeline::new(
         downscaler,
@@ -371,10 +324,7 @@ fn inspect_ui(
 
           ui.image(texture_id, [w as f32, h as f32]);
         }
-        ui.vertical(|ui| {
-          ui.label(format!("{:?}", entity));
-          ui.label(format!("{:?}", downscaler.state.load()));
-        });
+        ui.label(format!("{:?}", entity));
       });
     }
   });

@@ -47,7 +47,8 @@ struct Gradiator {
 }
 
 impl Gradiator {
-  fn new(input: Image, mut images: Assets<Image>) -> Self {
+  fn new(input_handle: Handle<Image>, images: &mut Assets<Image>) -> Self {
+    let input = images.get(&input_handle).unwrap();
     assert!(input.texture_descriptor.format == TextureFormat::R32Float);
 
     let size = input.texture_descriptor.size;
@@ -60,7 +61,7 @@ impl Gradiator {
 
     Self {
       size: (size.width, size.height),
-      input: images.add(input),
+      input: input_handle,
       gradient: images.add(gradient),
     }
   }
@@ -101,8 +102,12 @@ fn generate_downscaler(
   q: Query<(Entity, &Gradiator), Without<Downscaler>>,
 ) {
   for (entity, gradiator) in q.iter() {
-    let mut downscaler = Downscaler::new(DOWNSCALE_ITERATION, gradiator.size);
-    downscaler.init(gradiator.input.clone(), &mut images);
+    let downscaler = Downscaler::new(
+      DOWNSCALE_ITERATION,
+      gradiator.input().clone(),
+      &mut images,
+    );
+
     commands.entity(entity).insert(downscaler);
   }
 }
@@ -207,7 +212,7 @@ impl GradiatorBindGroup {
       };
 
       let prepared = value
-        .as_bind_group(setting_layout, render_device, images, fallback_image)
+        .as_bind_group(context_layout, render_device, images, fallback_image)
         .ok()
         .unwrap();
       prepared.bind_group
@@ -238,7 +243,7 @@ impl GradiatorPipeline {
 
     let pipeline_desc = ComputePipelineDescriptor {
       label: Some("gradiator".into()),
-      layout: vec![setting_layout, context_layout],
+      layout: vec![setting_layout.clone(), context_layout.clone()],
       shader: asset_server.load("gradiator.wgsl"),
       shader_defs,
       entry_point: "calc_gradient".into(),
