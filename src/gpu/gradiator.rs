@@ -9,8 +9,8 @@ use std::ops::Deref;
 
 use bevy::{
   prelude::{
-    default, App, AssetServer, Assets, Changed, Commands, Component, Entity,
-    Handle, Image, IntoSystemConfig, Plugin, Query, Res, ResMut, Resource,
+    default, App, AssetServer, Assets, Commands, Component, Entity, Handle,
+    Image, IntoSystemConfig, Plugin, Query, Res, ResMut, Resource, Without,
     World,
   },
   render::{
@@ -32,6 +32,8 @@ use bevy::{
   },
   utils::HashMap,
 };
+
+use super::downscaler::{Downscaler, DownscalerPlugin};
 
 const WORKGROUP_SIZE: u32 = 8;
 const DOWNSCALE_ITERATION: usize = 4;
@@ -62,20 +64,27 @@ impl Gradiator {
       gradient: images.add(gradient),
     }
   }
+
+  fn input(&self) -> &Handle<Image> {
+    &self.input
+  }
 }
 
 struct GradiatorPlugin;
 
 impl Plugin for GradiatorPlugin {
   fn build(&self, app: &mut App) {
-    app.add_plugin(ExtractComponentPlugin::<Gradiator>::default());
+    app
+      .add_plugin(ExtractComponentPlugin::<Gradiator>::default())
+      .add_plugin(DownscalerPlugin::default())
+      .add_system(generate_downscaler);
 
     let render_app = app.sub_app_mut(RenderApp);
     render_app
       .init_resource::<GradiatorPipelineCache>()
       .init_resource::<GradiatorBindGroupCache>()
-      .add_system(prepare_pipeline.in_set(RenderSet::Prepare))
-      .add_system(queue_bind_groups.in_set(RenderSet::Queue));
+      .add_system(prepare_pipeline_and_bind_group.in_set(RenderSet::Prepare));
+    // .add_system(queue_bind_groups.in_set(RenderSet::Queue));
 
     let mut render_graph = render_app.world.resource_mut::<RenderGraph>();
     render_graph.add_node("gradiator", GradiatorNode);
@@ -86,23 +95,62 @@ impl Plugin for GradiatorPlugin {
   }
 }
 
-fn prepare_pipeline(
+fn generate_downscaler(
+  mut commands: Commands,
+  mut images: ResMut<Assets<Image>>,
+  q: Query<(Entity, &Gradiator), Without<Downscaler>>,
+) {
+  for (entity, gradiator) in q.iter() {
+    let mut downscaler = Downscaler::new(DOWNSCALE_ITERATION, gradiator.size);
+    downscaler.init(gradiator.input.clone(), &mut images);
+    commands.entity(entity).insert(downscaler);
+  }
+}
+
+fn prepare_pipeline_and_bind_group(
   mut commands: Commands,
   render_device: Res<RenderDevice>,
   asset_server: Res<AssetServer>,
   pipeline_cache: Res<PipelineCache>,
   mut pipelines: ResMut<GradiatorPipelineCache>,
-  q: Query<(Entity, &Gradiator), Changed<Gradiator>>,
+  mut bind_groups: ResMut<GradiatorBindGroupCache>,
+  images: Res<RenderAssets<Image>>,
+  fallback_image: Res<FallbackImage>,
+  q: Query<(Entity, &Gradiator, &Downscaler), Without<GradiatorPipeline>>,
 ) {
-  for (entity, gradiator) in q.iter() {
+  for (entity, gradiator, downscaler) in q.iter() {
+    #[rustfmt::skip]
     let pipeline = pipelines
       .store
       .entry(entity)
-      .or_insert_with(|| GradiatorPipeline::new());
+      .or_insert_with(|| {
+        GradiatorPipeline::new(
+          &render_device,
+          &pipeline_cache,
+          &asset_server
+        )
+      })
+      .clone();
+
+    let bind_group = bind_groups
+      .store
+      .entry(entity)
+      .or_insert_with(|| {
+        GradiatorBindGroup::new(
+          gradiator,
+          downscaler,
+          &pipeline.setting_layout,
+          &pipeline.context_layout,
+          &render_device,
+          &images,
+          &fallback_image,
+        )
+      })
+      .clone();
+
+    commands.entity(entity).insert((pipeline, bind_group));
   }
 }
-
-fn queue_bind_groups() {}
 
 #[derive(Resource, Default)]
 struct GradiatorPipelineCache {
@@ -114,16 +162,65 @@ struct GradiatorBindGroupCache {
   store: HashMap<Entity, GradiatorBindGroup>,
 }
 
-#[derive(Component)]
+#[derive(Component, Clone)]
 struct GradiatorBindGroup {
   setting: BindGroup,
   context: BindGroup,
 }
 
-#[derive(Component)]
+const SOBEL_FILTER_HORIZONTAL: [f32; 9] = [
+  -1.0, 0.0, 1.0, //
+  -2.0, 0.0, 2.0, //
+  -1.0, 0.0, 1.0, //
+];
+const SOBEL_FILTER_VERTICAL: [f32; 9] = [
+  -1.0, -2.0, -1.0, //
+  0.0, 0.0, 0.0, //
+  1.0, 2.0, 1.0, //
+];
+
+impl GradiatorBindGroup {
+  fn new(
+    gradiator: &Gradiator,
+    downscaler: &Downscaler,
+    setting_layout: &BindGroupLayout,
+    context_layout: &BindGroupLayout,
+    render_device: &RenderDevice,
+    images: &RenderAssets<Image>,
+    fallback_image: &FallbackImage,
+  ) -> Self {
+    let setting = {
+      let value = GradiatorSetting {
+        horizontal_filter: SOBEL_FILTER_HORIZONTAL,
+        vertical_filter: SOBEL_FILTER_VERTICAL,
+      };
+      let prepared = value
+        .as_bind_group(setting_layout, render_device, images, fallback_image)
+        .ok()
+        .unwrap();
+      prepared.bind_group
+    };
+    let context = {
+      let value = GradiatorContext {
+        downscaled_images: downscaler.stages().to_vec(),
+        gradient: gradiator.gradient.clone(),
+      };
+
+      let prepared = value
+        .as_bind_group(setting_layout, render_device, images, fallback_image)
+        .ok()
+        .unwrap();
+      prepared.bind_group
+    };
+
+    Self { setting, context }
+  }
+}
+
+#[derive(Component, Clone)]
 struct GradiatorPipeline {
-  setting_bind_group_layout: BindGroupLayout,
-  context_bind_group_layout: BindGroupLayout,
+  setting_layout: BindGroupLayout,
+  context_layout: BindGroupLayout,
   pipeline_id: CachedComputePipelineId,
 }
 
@@ -150,8 +247,8 @@ impl GradiatorPipeline {
     let pipeline_id = pipeline_cache.queue_compute_pipeline(pipeline_desc);
 
     Self {
-      setting_bind_group_layout: setting_layout,
-      context_bind_group_layout: context_layout,
+      setting_layout,
+      context_layout,
       pipeline_id,
     }
   }

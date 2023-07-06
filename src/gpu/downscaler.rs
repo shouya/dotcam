@@ -58,7 +58,11 @@ impl Downscaler {
     }
   }
 
-  pub fn init(&mut self, mut input: Image, images: &mut Assets<Image>) {
+  pub fn init(
+    &mut self,
+    input_handle: Handle<Image>,
+    images: &mut Assets<Image>,
+  ) {
     if self.is_initialized() {
       panic!("Downscaler is already initialized");
     }
@@ -67,12 +71,16 @@ impl Downscaler {
       | TextureUsages::STORAGE_BINDING
       | TextureUsages::TEXTURE_BINDING;
 
+    let input = images.get_mut(&input_handle).unwrap();
+
     let size = input.texture_descriptor.size;
     let dimension = input.texture_descriptor.dimension;
     let format = input.texture_descriptor.format;
 
+    // ensure the usages are correct
     input.texture_descriptor.usage = usages;
-    self.stages = vec![images.add(input)];
+
+    self.stages = vec![input_handle];
 
     for i in 1..=self.iterations {
       let size = Extent3d {
