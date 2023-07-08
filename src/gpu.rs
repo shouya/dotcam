@@ -3,7 +3,9 @@ use bevy::{
     resource_changed, App, Assets, Commands, Component, Entity, Image,
     IntoSystemConfig, Plugin, Query, Res, ResMut, With,
   },
-  render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+  render::render_resource::{
+    Extent3d, TextureDimension, TextureFormat, TextureUsages,
+  },
 };
 
 use self::gradiator::{Gradiator, GradiatorPlugin};
@@ -57,7 +59,8 @@ fn copy_camera_stream_to_gradiator(
       };
       let dimension = TextureDimension::D2;
       let format = TextureFormat::R32Float;
-      let image = Image::new(size, dimension, data, format);
+      let mut image = Image::new(size, dimension, data, format);
+      image.texture_descriptor.usage |= TextureUsages::STORAGE_BINDING;
       let handle = images.add(image);
       commands
         .entity(entity)

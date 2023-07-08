@@ -49,14 +49,11 @@ impl Downscaler {
       | TextureUsages::STORAGE_BINDING
       | TextureUsages::TEXTURE_BINDING;
 
-    let input = images.get_mut(&input_handle).unwrap();
+    let input = images.get(&input_handle).unwrap();
 
     let input_size = input.texture_descriptor.size;
     let dimension = input.texture_descriptor.dimension;
     let format = input.texture_descriptor.format;
-
-    // ensure the usages are correct
-    input.texture_descriptor.usage = usages;
 
     let mut stages = vec![input_handle];
 
@@ -69,7 +66,7 @@ impl Downscaler {
 
       let mut image =
         Image::new_fill(size, dimension, &[0; size_of::<f32>()], format);
-      image.texture_descriptor.usage = usages;
+      image.texture_descriptor.usage |= usages;
 
       stages.push(images.add(image));
     }
