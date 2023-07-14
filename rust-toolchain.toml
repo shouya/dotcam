@@ -1,0 +1,3 @@
+[toolchain]
+# for portable simd support
+channel = "nightly"
