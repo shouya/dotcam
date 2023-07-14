@@ -3,6 +3,8 @@ use image::{
   ImageBuffer, LumaA,
 };
 
+use std::simd::{SimdFloat, SimdInt};
+
 use super::vector_field::{ScalarField, VectorField};
 
 pub fn gradient(image: &ScalarField) -> VectorField {
@@ -59,7 +61,7 @@ pub fn filter_3x3(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
 
 #[cfg(feature = "simd")]
 pub fn filter_3x3(image: &ScalarField, kernel: &[f32; 9]) -> ScalarField {
-  use std::simd::{Simd, SimdFloat};
+  use std::simd::Simd;
 
   use image::Luma;
 

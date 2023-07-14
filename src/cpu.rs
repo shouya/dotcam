@@ -162,7 +162,7 @@ fn update_repel_gradient(
     canvas[(x, y)].0[0] += 0.5;
   });
 
-  let gradient = accurate_gradient(&canvas, 6);
+  let gradient = accurate_gradient(&canvas, 5);
 
   for trans in q.iter_many(&all_circles.circles) {
     let [x, y] = static_param.translation_to_pixel(&trans.translation);
