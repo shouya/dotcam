@@ -185,17 +185,6 @@ struct GradiatorBindGroup {
   context: BindGroup,
 }
 
-const SOBEL_FILTER_HORIZONTAL: [f32; 9] = [
-  -1.0, 0.0, 1.0, //
-  -2.0, 0.0, 2.0, //
-  -1.0, 0.0, 1.0, //
-];
-const SOBEL_FILTER_VERTICAL: [f32; 9] = [
-  -1.0, -2.0, -1.0, //
-  0.0, 0.0, 0.0, //
-  1.0, 2.0, 1.0, //
-];
-
 impl GradiatorBindGroup {
   fn new(
     gradiator: &Gradiator,
@@ -208,8 +197,7 @@ impl GradiatorBindGroup {
   ) -> Self {
     let setting = {
       let value = GradiatorSetting {
-        horizontal_filter: SOBEL_FILTER_HORIZONTAL,
-        vertical_filter: SOBEL_FILTER_VERTICAL,
+        limit_iter: DOWNSCALE_ITERATION as u32,
       };
       let prepared = value
         .as_bind_group(setting_layout, render_device, images, fallback_image)
@@ -258,7 +246,7 @@ impl GradiatorPipeline {
     let pipeline_desc = ComputePipelineDescriptor {
       label: Some("gradiator".into()),
       layout: vec![setting_layout.clone(), context_layout.clone()],
-      shader: asset_server.load("shaders/gradiator.comp"),
+      shader: asset_server.load("shaders/gradiator.wgsl"),
       shader_defs,
       entry_point: "entry".into(),
       push_constant_ranges: vec![],
@@ -276,9 +264,7 @@ impl GradiatorPipeline {
 #[derive(AsBindGroup, Component)]
 struct GradiatorSetting {
   #[storage(0)]
-  horizontal_filter: [f32; 9],
-  #[storage(1)]
-  vertical_filter: [f32; 9],
+  limit_iter: u32,
 }
 
 // these are the types that cannot be generated easily with
