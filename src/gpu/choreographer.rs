@@ -114,12 +114,14 @@ impl Choreographer {
     let output_bytes = (input_size.x * input_size.y * F32_SIZE * 2) as u64;
     builder.add_empty_rw_storage(&output_name, output_bytes);
 
-    let resizer_input_name = format!("{}_input", prefix);
-    let mut input_vars = vec![input_size_name, resizer_input_name];
+    let downscaler_input_name = format!("{}_input", prefix);
+    let mut input_vars =
+      vec![input_size_name, output_name, downscaler_input_name];
 
-    for i in 1..=iterations {
-      let resizer_output_name = format!("downscaler_{}_{}_output", prefix, i);
-      input_vars.push(resizer_output_name);
+    for i in 1..iterations {
+      let downscaler_output_name =
+        format!("downscaler_{}_{}_output", prefix, i);
+      input_vars.push(downscaler_output_name);
     }
 
     let wg_size = input_size / UVec2::new(WG_SIZE, WG_SIZE);
@@ -136,8 +138,10 @@ impl Choreographer {
   fn build_choreographer(
     builder: &mut AppComputeWorkerBuilder<'_, Self>,
     circle_count: usize,
+    input_size: UVec2,
   ) {
     builder.add_storage("dt", &0.1f32);
+    builder.add_storage("input_size", &input_size);
     builder.add_storage("dots_locations", &vec![Vec2::ZERO; circle_count]);
     builder.add_storage("dots_velocities", &vec![Vec2::ZERO; circle_count]);
 
@@ -148,6 +152,7 @@ impl Choreographer {
       [circle_count as u32 / WG_SIZE, 1, 1],
       &[
         "dt",
+        "input_size",
         "dots_locations",
         "dots_velocities",
         "dots_gradiator_output",
@@ -176,7 +181,7 @@ impl ComputeWorker for Choreographer {
     Self::build_downscaler(&mut builder, "dots", 5, input_size);
     Self::build_gradiator(&mut builder, "dots", 5, input_size);
 
-    Self::build_choreographer(&mut builder, circle_count);
+    Self::build_choreographer(&mut builder, circle_count, input_size);
 
     builder.build()
   }

@@ -1,8 +1,9 @@
 use bevy::{
   prelude::{
-    default, resource_changed, shape, App, Assets, Color, Commands, Component,
-    Entity, FromWorld, Image, IntoSystemConfig, Mesh, Plugin, Query, Res,
-    ResMut, Resource, Transform, Vec2, With, World,
+    default, not, on_event, resource_changed, resource_exists, shape, App,
+    Assets, Color, Commands, Condition, DetectChangesMut, Entity, EventReader,
+    EventWriter, FromWorld, Handle, Image, IntoSystemConfig, Mesh, Plugin,
+    Query, Res, ResMut, Resource, Transform, Vec2, World,
   },
   render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureUsages,
@@ -10,7 +11,9 @@ use bevy::{
   sprite::{ColorMaterial, MaterialMesh2dBundle, Mesh2dHandle},
 };
 
-use self::gradiator::{Gradiator, GradiatorPlugin};
+use self::choreographer::{
+  ChoreographerInput, ChoreographerOutput, ChoreographerPlugin,
+};
 use crate::{camera_feed::CameraStream, StaticParam};
 
 mod choreographer;
@@ -24,11 +27,31 @@ pub struct DotCamPlugin;
 impl Plugin for DotCamPlugin {
   fn build(&self, app: &mut App) {
     app
-      .add_plugin(GradiatorPlugin::default())
+      .add_plugin(ChoreographerPlugin)
+      .add_startup_system(spawn_dots)
       .add_startup_system(setup)
+      .init_resource::<Dots>()
       .add_system(
-        copy_camera_stream_to_gradiator
-          .run_if(resource_changed::<CameraStream>()),
+        initialize_camera_texture.run_if(
+          resource_changed::<CameraStream>()
+            .and_then(not(resource_exists::<CameraTexture>())),
+        ),
+      )
+      .add_system(
+        update_camera_texture.run_if(
+          resource_changed::<CameraStream>()
+            .and_then(resource_exists::<CameraTexture>()),
+        ),
+      )
+      .add_system(update_dots.run_if(on_event::<ChoreographerOutput>()))
+      .add_system(update_dot_transforms.run_if(resource_changed::<Dots>()))
+      .add_system(
+        send_choreographer_input.run_if(
+          resource_exists::<CameraTexture>().and_then(
+            resource_changed::<Dots>()
+              .or_else(resource_changed::<CameraTexture>()),
+          ),
+        ),
       );
   }
 }
@@ -38,6 +61,9 @@ pub struct Dots {
   locations: Vec<Vec2>,
   velocities: Vec<Vec2>,
 }
+
+#[derive(Resource)]
+pub struct CameraTexture(pub Handle<Image>);
 
 impl FromWorld for Dots {
   fn from_world(world: &mut World) -> Self {
@@ -92,7 +118,19 @@ fn spawn_dots(
   commands.insert_resource(DotsTracker { dots: dot_entities });
 }
 
-fn update_dot_position(
+fn update_dots(
+  mut outputs: EventReader<ChoreographerOutput>,
+  mut dots: ResMut<Dots>,
+) {
+  let Some(output) = outputs.iter().last() else {
+    return;
+  };
+
+  dots.locations.copy_from_slice(&output.dot_locations);
+  dots.velocities.copy_from_slice(&output.dot_velocities);
+}
+
+fn update_dot_transforms(
   dots: Res<Dots>,
   tracker: Res<DotsTracker>,
   mut q: Query<&mut Transform>,
@@ -103,48 +141,56 @@ fn update_dot_position(
   }
 }
 
-#[derive(Component)]
-struct CameraPipeline;
+fn setup(mut _commands: Commands) {}
 
-fn setup(mut commands: Commands) {
-  commands.spawn(CameraPipeline);
-}
-
-fn copy_camera_stream_to_gradiator(
+fn initialize_camera_texture(
   mut commands: Commands,
   mut images: ResMut<Assets<Image>>,
-  mut q: Query<(Entity, Option<&mut Gradiator>), With<CameraPipeline>>,
   camera_stream_res: Res<CameraStream>,
 ) {
   let camera_stream = images.get(&camera_stream_res.0).unwrap();
-  let (entity, downscaler) = q.single_mut();
+  let w = camera_stream.texture_descriptor.size.width;
+  let h = camera_stream.texture_descriptor.size.height;
+  let size = Extent3d {
+    width: w,
+    height: h,
+    depth_or_array_layers: 1,
+  };
+  let dimension = TextureDimension::D2;
+  let format = TextureFormat::R32Float;
 
   let data = vec_u8_to_vec_f32norm(&camera_stream.data);
+  let mut image = Image::new(size, dimension, data, format);
+  image.texture_descriptor.usage |= TextureUsages::STORAGE_BINDING;
+  let handle = images.add(image);
+  commands.insert_resource(CameraTexture(handle));
+}
 
-  match downscaler {
-    None => {
-      // initialize the downscaler
-      let w = camera_stream.texture_descriptor.size.width;
-      let h = camera_stream.texture_descriptor.size.height;
-      let size = Extent3d {
-        width: w,
-        height: h,
-        depth_or_array_layers: 1,
-      };
-      let dimension = TextureDimension::D2;
-      let format = TextureFormat::R32Float;
-      let mut image = Image::new(size, dimension, data, format);
-      image.texture_descriptor.usage |= TextureUsages::STORAGE_BINDING;
-      let handle = images.add(image);
-      commands
-        .entity(entity)
-        .insert(Gradiator::new(handle, &mut images));
-    }
-    Some(downscaler) => {
-      let buffer = &mut images.get_mut(downscaler.input()).unwrap().data;
-      buffer.copy_from_slice(&data);
-    }
-  }
+fn update_camera_texture(
+  mut images: ResMut<Assets<Image>>,
+  camera_stream_res: Res<CameraStream>,
+  mut camera_texture: ResMut<CameraTexture>,
+) {
+  let camera_stream = images.get(&camera_stream_res.0).unwrap();
+  let data = vec_u8_to_vec_f32norm(&camera_stream.data);
+  let buffer = &mut images.get_mut(&camera_texture.0).unwrap().data;
+  buffer.copy_from_slice(&data);
+
+  // set the resource as changed so we can base run conditions on it.
+  camera_texture.set_changed();
+}
+
+fn send_choreographer_input(
+  mut inputs: EventWriter<ChoreographerInput>,
+  camera_texture: Res<CameraTexture>,
+  dots: ResMut<Dots>,
+) {
+  let input = ChoreographerInput {
+    camera_feed: camera_texture.0.clone(),
+    dot_locations: dots.locations.clone(),
+    dot_velocities: dots.velocities.clone(),
+  };
+  inputs.send(input);
 }
 
 // return bytes
