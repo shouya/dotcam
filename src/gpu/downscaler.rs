@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::{borrow::Cow, mem::size_of};
 
 use bevy::{

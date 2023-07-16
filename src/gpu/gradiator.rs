@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use bevy::{
   prelude::{
     default, App, AssetServer, Assets, Commands, Component, Entity, Handle,

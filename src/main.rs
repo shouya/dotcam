@@ -129,6 +129,10 @@ impl StaticParam {
     bevy::window::WindowResolution::new(w, h)
   }
 
+  fn circle_count(&self) -> usize {
+    self.circle_grid.0 * self.circle_grid.1
+  }
+
   fn circle_positions(&self) -> impl Iterator<Item = Vec2> {
     let (grid_w, grid_h) = self.circle_grid;
     let [x0, x1, y0, y1] = self.boundary();

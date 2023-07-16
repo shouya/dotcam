@@ -1,18 +1,22 @@
 use bevy::{
   prelude::{
-    resource_changed, App, Assets, Commands, Component, Entity, Image,
-    IntoSystemConfig, Plugin, Query, Res, ResMut, With,
+    default, resource_changed, shape, App, Assets, Color, Commands, Component,
+    Entity, FromWorld, Image, IntoSystemConfig, Mesh, Plugin, Query, Res,
+    ResMut, Resource, Transform, Vec2, With, World,
   },
   render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureUsages,
   },
+  sprite::{ColorMaterial, MaterialMesh2dBundle, Mesh2dHandle},
 };
 
 use self::gradiator::{Gradiator, GradiatorPlugin};
-use crate::camera_feed::CameraStream;
+use crate::{camera_feed::CameraStream, StaticParam};
 
+mod choreographer;
 mod downscaler;
 mod gradiator;
+mod shaders;
 
 #[derive(Default)]
 pub struct DotCamPlugin;
@@ -26,6 +30,76 @@ impl Plugin for DotCamPlugin {
         copy_camera_stream_to_gradiator
           .run_if(resource_changed::<CameraStream>()),
       );
+  }
+}
+
+#[derive(Resource, Clone)]
+pub struct Dots {
+  locations: Vec<Vec2>,
+  velocities: Vec<Vec2>,
+}
+
+impl FromWorld for Dots {
+  fn from_world(world: &mut World) -> Self {
+    let mut dots = Dots {
+      locations: Vec::new(),
+      velocities: Vec::new(),
+    };
+    let param = world.resource::<StaticParam>();
+
+    for pos in param.circle_positions() {
+      dots.locations.push(pos);
+      dots.velocities.push(Vec2::ZERO);
+    }
+
+    dots
+  }
+}
+
+#[derive(Resource, Clone)]
+pub struct DotsTracker {
+  dots: Vec<Entity>,
+}
+
+fn spawn_dots(
+  mut commands: Commands,
+  param: Res<StaticParam>,
+  mut meshes: ResMut<Assets<Mesh>>,
+  mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+  let mut dot_entities = Vec::new();
+  let mesh: Mesh2dHandle = meshes
+    .add(Mesh::from(shape::Circle {
+      radius: param.circle_radius,
+      ..default()
+    }))
+    .into();
+
+  let material = materials.add(Color::rgb(0.0, 0.0, 0.0).into());
+
+  for _ in param.circle_positions() {
+    let entity = commands
+      .spawn(MaterialMesh2dBundle {
+        mesh: mesh.clone(),
+        material: material.clone(),
+        ..default()
+      })
+      .id();
+
+    dot_entities.push(entity);
+  }
+
+  commands.insert_resource(DotsTracker { dots: dot_entities });
+}
+
+fn update_dot_position(
+  dots: Res<Dots>,
+  tracker: Res<DotsTracker>,
+  mut q: Query<&mut Transform>,
+) {
+  for (i, entity) in tracker.dots.iter().enumerate() {
+    let mut transform = q.get_mut(*entity).unwrap();
+    transform.translation = dots.locations[i].extend(0.0);
   }
 }
 
