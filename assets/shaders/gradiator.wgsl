@@ -49,9 +49,13 @@ fn calc_gradient_all_scale(coord: vec2i) -> vec2f {
 
 fn calc_gradient(index: i32, coord: vec2i) -> vec2f {
   var m: mat3x3f;
-  for(var i: i32 = -1; i < 2; i = i + 1) {
-    for(var j: i32 = -1; j < 2; j = j + 1) {
-      m[i+1][j+1] = get_input(index, coord + vec2i(i, j));
+  let bound = vec2u(u32(input_size.x) >> u32(index),
+                    u32(input_size.y) >> u32(index));
+  let coord = vec2i(i32(u32(coord.x) >> u32(index)),
+                    i32(u32(coord.y) >> u32(index)));
+  for(var i: i32 = -1; i <= 1; i = i + 1) {
+    for(var j: i32 = -1; j <= 1; j = j + 1) {
+      m[i+1][j+1] = get_input(index, coord + vec2i(i, j), bound);
     }
   }
   return dot_gradient(m);
@@ -64,12 +68,9 @@ fn dot_gradient(m: mat3x3f) -> vec2f {
    return vec2f(dh, dv);
 }
 
-fn get_input(index: i32, coord: vec2i) -> f32 {
-  let loc = vec2u(u32(coord.x) >> u32(index),
-                  u32(coord.y) >> u32(index));
-  let size = vec2u(u32(input_size.x) >> u32(index),
-                   u32(input_size.y) >> u32(index));
-  let i = loc.x + loc.y * size.x;
+fn get_input(index: i32, coord: vec2i, bound: vec2u) -> f32 {
+  let loc = wraparound(coord, bound);
+  let i = loc.x + loc.y * i32(bound.x);
 
   switch index {
     case 0: { return input_scale_1[i]; }
@@ -79,4 +80,8 @@ fn get_input(index: i32, coord: vec2i) -> f32 {
     case 4: { return input_scale_5[i]; }
     default: { return 0.72; }
   }
+}
+
+fn wraparound(loc: vec2i, bound: vec2u) -> vec2i {
+   return loc % vec2i(bound);
 }

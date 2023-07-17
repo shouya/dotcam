@@ -121,10 +121,6 @@ impl Choreographer {
       let name = |n| format!("downscaler_{}_{}_{}", prefix, i, n);
       let output_size = input_size / 2;
       let output_bytes = (output_size.x * output_size.y * F32_SIZE) as u64;
-      dbg!(&input_name);
-      dbg!(name("output"));
-      dbg!(input_size);
-      dbg!(output_size);
 
       builder.add_storage(&name("input_size"), &input_size);
       builder.add_storage(&name("output_size"), &output_size);
@@ -134,7 +130,7 @@ impl Choreographer {
       let wg_count = output_size / UVec2::new(WG_SIZE, WG_SIZE);
 
       builder.add_pass::<shaders::DownscalerShader>(
-        [wg_count.x, wg_count.y, 0],
+        [wg_count.x, wg_count.y, 1],
         &[
           &name("input_size"),
           &name("output_size"),

@@ -18,12 +18,16 @@ fn main(
   @builtin(global_invocation_id) invocation_id: vec3<u32>,
 ) {
   let location = vec2<i32>(invocation_id.xy);
-  let value = input[to_index(location, input_size)];
-  output[to_index(location, output_size)] = 1.0;
+  let v1 = input[to_index(location * 2, input_size)];
+  let v2 = input[to_index(location * 2 + vec2i(1,0), input_size)];
+  let v3 = input[to_index(location * 2 + vec2i(0,1), input_size)];
+  let v4 = input[to_index(location * 2 + vec2i(1,1), input_size)];
+  // take the average color
+  output[to_index(location, output_size)] = (v1 + v2 + v3 + v4) / 4.0;
 }
 
 fn to_index(loc: vec2i, bound: vec2u) -> i32 {
-  // let loc = wraparound(loc, bound);
+  let loc = wraparound(loc, bound);
   return loc.x + loc.y * i32(bound.x);
 }
 
