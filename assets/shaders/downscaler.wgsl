@@ -18,14 +18,13 @@ fn main(
   @builtin(global_invocation_id) invocation_id: vec3<u32>,
 ) {
   let location = vec2<i32>(invocation_id.xy);
-  let value = input[to_index(location * 2, input_size)];
-  output[to_index(location, output_size)] = value;
+  let value = input[to_index(location, input_size)];
+  output[to_index(location, output_size)] = 1.0;
 }
 
 fn to_index(loc: vec2i, bound: vec2u) -> i32 {
-  let wrapped = wraparound(loc, bound);
-  let index = wrapped.x + wrapped.y * i32(bound.x);
-  return index;
+  // let loc = wraparound(loc, bound);
+  return loc.x + loc.y * i32(bound.x);
 }
 
 fn wraparound(loc: vec2i, bound: vec2u) -> vec2i {

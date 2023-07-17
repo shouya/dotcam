@@ -1,9 +1,9 @@
 use bevy::{
   prelude::{
-    default, not, on_event, resource_changed, resource_exists, shape, App,
-    Assets, Color, Commands, Condition, DetectChangesMut, Entity, EventReader,
-    EventWriter, FromWorld, Handle, Image, IntoSystemConfig, Mesh, Plugin,
-    Query, Res, ResMut, Resource, Transform, Vec2, World,
+    default, not, resource_changed, resource_exists, shape, App, Assets, Color,
+    Commands, Condition, DetectChangesMut, Entity, EventReader, EventWriter,
+    Handle, Image, IntoSystemConfig, Mesh, Plugin, Query, Res, ResMut,
+    Resource, Transform, Vec3,
   },
   render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureUsages,
@@ -12,7 +12,7 @@ use bevy::{
 };
 
 use self::choreographer::{
-  ChoreographerInput, ChoreographerOutput, ChoreographerPlugin,
+  Choreographer, ChoreographerInput, ChoreographerOutput, ChoreographerPlugin,
 };
 use crate::{camera_feed::CameraStream, StaticParam};
 
@@ -30,7 +30,7 @@ impl Plugin for DotCamPlugin {
       .add_plugin(ChoreographerPlugin)
       .add_startup_system(spawn_dots)
       .add_startup_system(setup)
-      .init_resource::<Dots>()
+      .add_startup_system(setup_choreographer_tapouts)
       .add_system(
         initialize_camera_texture.run_if(
           resource_changed::<CameraStream>()
@@ -43,44 +43,18 @@ impl Plugin for DotCamPlugin {
             .and_then(resource_exists::<CameraTexture>()),
         ),
       )
-      .add_system(update_dots.run_if(on_event::<ChoreographerOutput>()))
-      .add_system(update_dot_transforms.run_if(resource_changed::<Dots>()))
+      .add_system(update_dot_transforms)
       .add_system(
         send_choreographer_input.run_if(
-          resource_exists::<CameraTexture>().and_then(
-            resource_changed::<Dots>()
-              .or_else(resource_changed::<CameraTexture>()),
-          ),
+          resource_exists::<CameraTexture>()
+            .and_then(resource_changed::<CameraTexture>()),
         ),
       );
   }
 }
 
-#[derive(Resource, Clone)]
-pub struct Dots {
-  locations: Vec<Vec2>,
-  velocities: Vec<Vec2>,
-}
-
 #[derive(Resource)]
 pub struct CameraTexture(pub Handle<Image>);
-
-impl FromWorld for Dots {
-  fn from_world(world: &mut World) -> Self {
-    let mut dots = Dots {
-      locations: Vec::new(),
-      velocities: Vec::new(),
-    };
-    let param = world.resource::<StaticParam>();
-
-    for pos in param.circle_positions() {
-      dots.locations.push(pos);
-      dots.velocities.push(Vec2::ZERO);
-    }
-
-    dots
-  }
-}
 
 #[derive(Resource, Clone)]
 pub struct DotsTracker {
@@ -118,26 +92,55 @@ fn spawn_dots(
   commands.insert_resource(DotsTracker { dots: dot_entities });
 }
 
-fn update_dots(
+fn setup_choreographer_tapouts(
+  mut commands: Commands,
+  mut images: ResMut<Assets<Image>>,
+) {
+  let rf32 = TextureFormat::R32Float;
+  let rgf32 = TextureFormat::Rg32Float;
+
+  Choreographer::tap(
+    &mut commands,
+    &mut images,
+    "downscaler_camera_1_output",
+    (256, 256),
+    rf32,
+  );
+
+  Choreographer::tap(
+    &mut commands,
+    &mut images,
+    "downscaler_camera_2_output",
+    (128, 128),
+    rf32,
+  );
+
+  Choreographer::tap(
+    &mut commands,
+    &mut images,
+    "gradiator_camera_output",
+    (512, 512),
+    rgf32,
+  );
+}
+
+fn update_dot_transforms(
   mut outputs: EventReader<ChoreographerOutput>,
-  mut dots: ResMut<Dots>,
+  tracker: Res<DotsTracker>,
+  mut q: Query<&mut Transform>,
 ) {
   let Some(output) = outputs.iter().last() else {
     return;
   };
 
-  dots.locations.copy_from_slice(&output.dot_locations);
-  dots.velocities.copy_from_slice(&output.dot_velocities);
-}
-
-fn update_dot_transforms(
-  dots: Res<Dots>,
-  tracker: Res<DotsTracker>,
-  mut q: Query<&mut Transform>,
-) {
   for (i, entity) in tracker.dots.iter().enumerate() {
     let mut transform = q.get_mut(*entity).unwrap();
-    transform.translation = dots.locations[i].extend(0.0);
+    let translation = Vec3::new(
+      output.dot_locations[i].x - 256.0,
+      256.0 - output.dot_locations[i].y,
+      0.0,
+    );
+    transform.translation = translation;
   }
 }
 
@@ -183,12 +186,9 @@ fn update_camera_texture(
 fn send_choreographer_input(
   mut inputs: EventWriter<ChoreographerInput>,
   camera_texture: Res<CameraTexture>,
-  dots: ResMut<Dots>,
 ) {
   let input = ChoreographerInput {
     camera_feed: camera_texture.0.clone(),
-    dot_locations: dots.locations.clone(),
-    dot_velocities: dots.velocities.clone(),
   };
   inputs.send(input);
 }

@@ -35,7 +35,7 @@ struct Grid<T> {
   value: Vec<T>,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Clone)]
 struct StaticParam {
   pub size: (f32, f32),
   pub circle_grid: (usize, usize),
@@ -127,10 +127,6 @@ impl StaticParam {
   fn resolution(&self) -> bevy::window::WindowResolution {
     let (w, h) = self.size;
     bevy::window::WindowResolution::new(w, h)
-  }
-
-  fn circle_count(&self) -> usize {
-    self.circle_grid.0 * self.circle_grid.1
   }
 
   fn circle_positions(&self) -> impl Iterator<Item = Vec2> {

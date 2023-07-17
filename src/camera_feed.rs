@@ -123,12 +123,8 @@ fn preview_output(mut ctx: EguiContexts, stream: Res<CameraStream>) {
     .image_id(&stream.0)
     .unwrap_or_else(|| ctx.add_image(stream.0.clone_weak()));
 
-  bevy_inspector_egui::egui::Window::new("Camera Buffer").show(
-    ctx.ctx_mut(),
-    |ui| {
-      ui.image(texture_id, [100.0, 100.0]);
-    },
-  );
+  bevy_inspector_egui::egui::Window::new("Camera Buffer")
+    .show(ctx.ctx_mut(), |ui| ui.image(texture_id, [100.0, 100.0]));
 }
 
 fn camera_buffer_to_image(

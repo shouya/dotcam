@@ -53,8 +53,7 @@ fn main(
   let new_velocity: vec2f = vel + dt * gradient;
   dot_new_velocities[index] = new_velocity;
 
-  let bound = vec2f(512.0, 512.0);
-  let new_location = wraparound(loc + new_velocity * dt, bound);
+  let new_location = wraparound(loc + new_velocity * dt, vec2f(gradient_size));
   dot_new_locations[index] = new_location;
 }
 
