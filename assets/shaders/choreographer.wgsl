@@ -33,6 +33,8 @@ var<storage, write> dot_new_locations: array<vec2f>;
 @group(0) @binding(7)
 var<storage, write> dot_new_velocities: array<vec2f>;
 
+const friction: f32 = 0.9;
+
 
 @compute @workgroup_size(8, 1, 1)
 fn main(
@@ -50,14 +52,17 @@ fn main(
   let gradient2 = dot_gradient[i];
   let gradient: vec2f = (gradient1 + gradient2) / 2.0;
 
-  let new_velocity: vec2f = vel + dt * gradient;
-  dot_new_velocities[index] = new_velocity;
+  var new_velocity: vec2f = vel + dt * -gradient;
+  new_velocity = new_velocity * -4.0 * friction;
+  dot_new_velocities[index] = max(new_velocity, vec2f(10.0));
 
+  // let new_location = wraparound(loc + new_velocity * dt, vec2f(gradient_size));
   let new_location = wraparound(loc + new_velocity * dt, vec2f(gradient_size));
   dot_new_locations[index] = new_location;
 }
 
 fn wraparound(v: vec2f, bound: vec2f) -> vec2f {
-  let x = v / bound;
-  return (x - trunc(x)) * bound;
+  let r = v % bound;
+  let p = select(r, r + bound, r < vec2<f32>(0.0, 0.0));
+  return p;
 }

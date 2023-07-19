@@ -200,10 +200,10 @@ impl Choreographer {
       &[
         "dt",
         "input_size",
+        "gradiator_camera_output",
+        "gradiator_dots_output",
         "dots_locations",
         "dots_velocities",
-        "gradiator_dots_output",
-        "gradiator_camera_output",
         "dots_new_locations",
         "dots_new_velocities",
       ],
@@ -266,7 +266,7 @@ fn process_output_system(
     return;
   }
 
-  let new_locations = worker.read_vec("dots_new_locations");
+  let new_locations = worker.read_vec("dots_locations");
 
   let output = ChoreographerOutput {
     dot_locations: new_locations,

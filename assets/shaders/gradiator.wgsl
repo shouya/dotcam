@@ -44,7 +44,7 @@ fn calc_gradient_all_scale(coord: vec2i) -> vec2f {
   for (var i = 0; i <= DOWNSCALE_ITER; i = i + 1) {
     sum += calc_gradient(i, coord);
   }
-  return sum / f32(DOWNSCALE_ITER);
+  return sum / f32(DOWNSCALE_ITER + 1);
 }
 
 fn calc_gradient(index: i32, coord: vec2i) -> vec2f {
