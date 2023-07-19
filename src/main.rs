@@ -148,6 +148,11 @@ impl StaticParam {
     })
   }
 
+  fn circle_positions_pos(&self) -> impl Iterator<Item = Vec2> {
+    let offset = Vec2::new(self.width() / 2.0, self.height() / 2.0);
+    self.circle_positions().map(move |pos| pos + offset)
+  }
+
   fn boundary(&self) -> [f32; 4] {
     let x0 = self.size.0 / -2.0;
     let x1 = self.size.0 / 2.0;

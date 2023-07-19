@@ -186,7 +186,7 @@ impl Choreographer {
     builder.add_storage("dt", &0.1f32);
     builder.add_storage("input_size", &input_size);
 
-    let locations: Vec<Vec2> = param.circle_positions().collect();
+    let locations: Vec<Vec2> = param.circle_positions_pos().collect();
     builder.add_staging("dots_locations", &locations);
 
     let circle_count = locations.len();
@@ -267,6 +267,7 @@ fn process_output_system(
   }
 
   let new_locations = worker.read_vec("dots_locations");
+  // dbg!(new_locations[10]);
 
   let output = ChoreographerOutput {
     dot_locations: new_locations,

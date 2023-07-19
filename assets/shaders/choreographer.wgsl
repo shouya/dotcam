@@ -50,13 +50,12 @@ fn main(
 
   let gradient1 = camera_gradient[i];
   let gradient2 = dot_gradient[i];
-  let gradient: vec2f = (gradient1 + gradient2) / 2.0;
+  let gradient: vec2f = gradient1;
 
-  var new_velocity: vec2f = vel + dt * -gradient;
-  new_velocity = new_velocity * -4.0 * friction;
-  dot_new_velocities[index] = max(new_velocity, vec2f(10.0));
+  var new_velocity: vec2f = vel + dt * gradient * 1000.0;
+  new_velocity = new_velocity * friction;
+  dot_new_velocities[index] = clamp(new_velocity, vec2f(-10.0), vec2f(10.0));
 
-  // let new_location = wraparound(loc + new_velocity * dt, vec2f(gradient_size));
   let new_location = wraparound(loc + new_velocity * dt, vec2f(gradient_size));
   dot_new_locations[index] = new_location;
 }
