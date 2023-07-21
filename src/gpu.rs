@@ -11,6 +11,7 @@ use bevy::{
   sprite::{ColorMaterial, MaterialMesh2dBundle, Mesh2dHandle},
 };
 
+#[allow(unused)]
 use self::choreographer::{
   Choreographer, ChoreographerInput, ChoreographerOutput, ChoreographerPlugin,
 };
@@ -30,7 +31,6 @@ impl Plugin for DotCamPlugin {
       .add_plugin(ChoreographerPlugin)
       .add_startup_system(spawn_dots)
       .add_startup_system(setup)
-      .add_startup_system(setup_choreographer_tapouts)
       .add_system(
         initialize_camera_texture.run_if(
           resource_changed::<CameraStream>()
@@ -50,6 +50,9 @@ impl Plugin for DotCamPlugin {
             .and_then(resource_changed::<CameraTexture>()),
         ),
       );
+
+    #[cfg(feature = "inspector")]
+    app.add_startup_system(setup_choreographer_tapouts);
   }
 }
 
@@ -92,6 +95,7 @@ fn spawn_dots(
   commands.insert_resource(DotsTracker { dots: dot_entities });
 }
 
+#[cfg(feature = "inspector")]
 fn setup_choreographer_tapouts(
   mut commands: Commands,
   mut images: ResMut<Assets<Image>>,

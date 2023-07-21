@@ -26,7 +26,9 @@ use bevy::{
   utils::HashMap,
 };
 
+#[cfg(feature = "inspector")]
 use bevy_egui::{EguiContext, EguiUserTextures};
+#[cfg(feature = "inspector")]
 use bevy_inspector_egui::egui;
 
 // the input image must be of format R32Float
@@ -276,12 +278,16 @@ fn prepare_pipeline(
 }
 
 pub struct DownscalerPlugin {
+  #[cfg(feature = "inspector")]
   inspect_ui: bool,
 }
 
 impl Default for DownscalerPlugin {
   fn default() -> Self {
-    Self { inspect_ui: true }
+    Self {
+      #[cfg(feature = "inspector")]
+      inspect_ui: true,
+    }
   }
 }
 
@@ -289,6 +295,7 @@ impl Plugin for DownscalerPlugin {
   fn build(&self, app: &mut App) {
     app.add_plugin(ExtractComponentPlugin::<Downscaler>::default());
 
+    #[cfg(feature = "inspector")]
     if self.inspect_ui {
       app.add_system(inspect_ui);
     }
@@ -304,6 +311,7 @@ impl Plugin for DownscalerPlugin {
   }
 }
 
+#[cfg(feature = "inspector")]
 fn inspect_ui(
   mut textures: ResMut<EguiUserTextures>,
   mut ctx: Query<&mut EguiContext>,

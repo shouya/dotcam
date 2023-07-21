@@ -25,7 +25,9 @@ use bevy::{
   },
   utils::HashMap,
 };
+#[cfg(feature = "inspector")]
 use bevy_egui::{EguiContext, EguiUserTextures};
+#[cfg(feature = "inspector")]
 use bevy_inspector_egui::egui;
 
 use super::downscaler::{Downscaler, DownscalerPlugin};
@@ -79,12 +81,16 @@ impl Gradiator {
 }
 
 pub struct GradiatorPlugin {
+  #[cfg(feature = "inspector")]
   inspect_ui: bool,
 }
 
 impl Default for GradiatorPlugin {
   fn default() -> Self {
-    Self { inspect_ui: true }
+    Self {
+      #[cfg(feature = "inspector")]
+      inspect_ui: true,
+    }
   }
 }
 
@@ -95,6 +101,7 @@ impl Plugin for GradiatorPlugin {
       .add_plugin(DownscalerPlugin::default())
       .add_system(generate_downscaler);
 
+    #[cfg(feature = "inspector")]
     if self.inspect_ui {
       app.add_system(inspect_ui);
     }
@@ -410,6 +417,7 @@ impl Node for GradiatorNode {
   }
 }
 
+#[cfg(feature = "inspector")]
 fn inspect_ui(
   mut textures: ResMut<EguiUserTextures>,
   mut ctx: Query<&mut EguiContext>,

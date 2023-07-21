@@ -1,8 +1,9 @@
 #![feature(portable_simd)]
 #![feature(generic_arg_infer)]
 
+#[cfg(feature = "inspector")]
+use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::{
-  diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
   prelude::{
     default, App, AssetPlugin, Camera2d, Camera2dBundle, Color, Commands,
     Component, DefaultPlugins, PluginGroup, Reflect, ReflectResource, Resource,
@@ -10,6 +11,8 @@ use bevy::{
   },
   window::{Window, WindowPlugin},
 };
+
+#[cfg(feature = "inspector")]
 use bevy_egui::EguiPlugin;
 #[cfg(feature = "inspector")]
 use bevy_inspector_egui::{
@@ -43,14 +46,19 @@ struct StaticParam {
   pub circle_radius: f32,
 }
 
-#[derive(Resource, Reflect, InspectorOptions)]
-#[reflect(Resource, InspectorOptions)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
+#[cfg_attr(
+  feature = "inspector",
+  derive(InspectorOptions),
+  reflect(InspectorOptions)
+)]
 struct DynamicParam {
-  #[inspector(min = 0.0, max = 100.0)]
+  #[cfg_attr(feature = "inspector", inspector(min = 0.0, max = 100.0))]
   pub friction: f32,
-  #[inspector(min = 0.0, max = 1000.0)]
+  #[cfg_attr(feature = "inspector", inspector(min = 0.0, max = 1000.0))]
   pub repel_strength: f32,
-  #[inspector(min = -1000.0, max = 1000.0)]
+  #[cfg_attr(feature = "inspector", inspector(min = -1000.0, max = 1000.0))]
   pub gradient_strength: f32,
 }
 
@@ -80,18 +88,24 @@ fn main() {
       ..default()
     });
 
-  App::new()
+  let mut app = App::new();
+
+  app
     .add_plugins(plugins)
-    .add_plugin(EguiPlugin)
     .insert_resource(static_param)
     .init_resource::<DynamicParam>()
-    .add_plugin(ResourceInspectorPlugin::<DynamicParam>::default())
-    .add_plugin(FrameTimeDiagnosticsPlugin)
-    .add_plugin(LogDiagnosticsPlugin::default())
     .add_plugin(CameraFeedPlugin::default())
     .add_plugin(DotCamPlugin::default())
-    .add_startup_system(setup_camera)
-    .run();
+    .add_startup_system(setup_camera);
+
+  #[cfg(feature = "inspector")]
+  app
+    .add_plugin(EguiPlugin)
+    .add_plugin(ResourceInspectorPlugin::<DynamicParam>::default())
+    .add_plugin(FrameTimeDiagnosticsPlugin)
+    .add_plugin(LogDiagnosticsPlugin::default());
+
+  app.run()
 }
 
 fn setup_camera(mut commands: Commands) {

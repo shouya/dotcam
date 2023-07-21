@@ -6,6 +6,7 @@ use bevy::{
   render::render_resource::{Extent3d, TextureDimension, TextureFormat},
   window::WindowCloseRequested,
 };
+#[cfg(feature = "inspector")]
 use bevy_egui::EguiContexts;
 use crossbeam::channel::{self, Receiver};
 use image::{codecs::jpeg::JpegDecoder, DynamicImage, ImageDecoder};
@@ -14,13 +15,14 @@ use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
 use crate::StaticParam;
 
 pub struct CameraFeedPlugin {
-  // target will be tagged with
+  #[cfg(feature = "inspector")]
   pub inspect_webcam: bool,
 }
 
 impl Default for CameraFeedPlugin {
   fn default() -> Self {
     Self {
+      #[cfg(feature = "inspector")]
       inspect_webcam: true,
     }
   }
@@ -28,12 +30,13 @@ impl Default for CameraFeedPlugin {
 
 impl Plugin for CameraFeedPlugin {
   fn build(&self, app: &mut App) {
-    let app = app
+    app
       .init_resource::<CameraDev>()
       .init_resource::<CameraStream>()
       .add_system(save_camera_output)
       .add_system(stop_webcam.run_if(on_event::<WindowCloseRequested>()));
 
+    #[cfg(feature = "inspector")]
     if self.inspect_webcam {
       app.add_system(preview_output);
     }
@@ -118,6 +121,7 @@ fn save_camera_output(
   stream.set_changed();
 }
 
+#[cfg(feature = "inspector")]
 fn preview_output(mut ctx: EguiContexts, stream: Res<CameraStream>) {
   let texture_id = ctx
     .image_id(&stream.0)

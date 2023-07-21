@@ -1,5 +1,6 @@
 use std::mem;
 
+#[allow(unused)]
 use bevy::{
   prelude::{
     App, Assets, Commands, Component, EventReader, EventWriter, Handle, Image,
@@ -15,6 +16,7 @@ use bevy_app_compute::prelude::{
   AppComputePlugin, AppComputeWorker, AppComputeWorkerBuilder,
   AppComputeWorkerPlugin, ComputeWorker,
 };
+#[cfg(feature = "inspector")]
 use bevy_egui::{egui, EguiContext, EguiUserTextures};
 
 use crate::StaticParam;
@@ -31,12 +33,11 @@ impl Plugin for ChoreographerPlugin {
       .add_event::<ChoreographerInput>()
       .add_event::<ChoreographerOutput>()
       .add_system(process_output_system)
+      .add_system(process_input_system.after(process_output_system));
+
+    #[cfg(feature = "inspector")]
+    app
       .add_system(process_tapout_system.after(process_output_system))
-      .add_system(
-        process_input_system
-          .after(process_output_system)
-          .after(process_tapout_system),
-      )
       .add_system(inspect_tapout_system.after(process_tapout_system));
   }
 }
@@ -67,6 +68,7 @@ const F32_SIZE: u32 = mem::size_of::<f32>() as u32;
 //  dots_new_locations - Vec<Vec2>
 //  dots_new_velocities - Vec<Vec2>
 
+#[cfg(feature = "inspector")]
 #[derive(Component)]
 struct Tapout {
   name: String,
@@ -74,6 +76,7 @@ struct Tapout {
 }
 
 impl Choreographer {
+  #[cfg(feature = "inspector")]
   pub fn tap(
     commands: &mut Commands,
     images: &mut Assets<Image>,
@@ -265,7 +268,6 @@ impl ComputeWorker for Choreographer {
 }
 
 fn process_input_system(
-  time: Res<Time>,
   mut inputs: EventReader<ChoreographerInput>,
   images: Res<Assets<Image>>,
   mut worker: ResMut<AppComputeWorker<Choreographer>>,
@@ -282,11 +284,11 @@ fn process_input_system(
     return;
   }
 
-  worker.write("dt", &time.delta_seconds());
   worker.write_slice("camera_input", &camera_feed.data);
 }
 
 fn process_output_system(
+  time: Res<Time>,
   mut outputs: EventWriter<ChoreographerOutput>,
   static_param: Res<StaticParam>,
   mut worker: ResMut<AppComputeWorker<Choreographer>>,
@@ -295,10 +297,10 @@ fn process_output_system(
     return;
   }
   let new_locations = worker.read_vec("dots_locations");
-  // dbg!(new_locations[10]);
 
   let pixel_count = (static_param.width() * static_param.height()) as usize;
   worker.write_slice("dots_input", &vec![0f32; pixel_count]);
+  worker.write("dt", &time.delta_seconds());
 
   let output = ChoreographerOutput {
     dot_locations: new_locations,
@@ -306,6 +308,7 @@ fn process_output_system(
   outputs.send(output);
 }
 
+#[cfg(feature = "inspector")]
 fn process_tapout_system(
   worker: Res<AppComputeWorker<Choreographer>>,
   mut images: ResMut<Assets<Image>>,
@@ -325,6 +328,7 @@ fn process_tapout_system(
   }
 }
 
+#[cfg(feature = "inspector")]
 fn inspect_tapout_system(
   mut textures: ResMut<EguiUserTextures>,
   mut ctx: Query<&mut EguiContext>,
