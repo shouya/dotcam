@@ -209,7 +209,7 @@ impl Choreographer {
     input_size: UVec2,
     param: &StaticParam,
   ) {
-    builder.add_storage("dt", &0.1f32);
+    builder.add_storage("dt", &0.01667f32);
     builder.add_storage("input_size", &input_size);
 
     let locations: Vec<Vec2> = param.circle_positions_pos().collect();
@@ -247,7 +247,7 @@ impl ComputeWorker for Choreographer {
 
     let mut builder = AppComputeWorkerBuilder::new(world);
 
-    Self::build_dotpainter(&mut builder, 3, input_size, &static_param);
+    Self::build_dotpainter(&mut builder, 1, input_size, &static_param);
 
     Self::build_downscaler(&mut builder, "camera", 5, input_size);
     Self::build_gradiator(&mut builder, "camera", 5, input_size);
@@ -268,7 +268,6 @@ fn process_input_system(
   time: Res<Time>,
   mut inputs: EventReader<ChoreographerInput>,
   images: Res<Assets<Image>>,
-  static_param: Res<StaticParam>,
   mut worker: ResMut<AppComputeWorker<Choreographer>>,
 ) {
   let Some(input) = inputs.iter().last() else {
@@ -283,23 +282,23 @@ fn process_input_system(
     return;
   }
 
-  let pixel_count = (static_param.width() * static_param.height()) as usize;
-
   worker.write("dt", &time.delta_seconds());
-  worker.write_slice("dots_input", &vec![0f32; pixel_count]);
   worker.write_slice("camera_input", &camera_feed.data);
 }
 
 fn process_output_system(
   mut outputs: EventWriter<ChoreographerOutput>,
-  worker: Res<AppComputeWorker<Choreographer>>,
+  static_param: Res<StaticParam>,
+  mut worker: ResMut<AppComputeWorker<Choreographer>>,
 ) {
   if !worker.ready() {
     return;
   }
-
   let new_locations = worker.read_vec("dots_locations");
   // dbg!(new_locations[10]);
+
+  let pixel_count = (static_param.width() * static_param.height()) as usize;
+  worker.write_slice("dots_input", &vec![0f32; pixel_count]);
 
   let output = ChoreographerOutput {
     dot_locations: new_locations,
