@@ -30,3 +30,13 @@ impl ComputeShader for ChoreographerShader {
     "shaders/choreographer.wgsl".into()
   }
 }
+
+#[derive(TypeUuid)]
+#[uuid = "c91b0e76-012c-4dc1-9810-a50d62b7d5ec"]
+pub(crate) struct DotpainterShader;
+
+impl ComputeShader for DotpainterShader {
+  fn shader() -> ShaderRef {
+    "shaders/dotpainter.wgsl".into()
+  }
+}

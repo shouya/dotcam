@@ -108,8 +108,10 @@ impl Choreographer {
     mut input_size: UVec2,
   ) {
     let input_name = format!("{}_input", prefix);
-    let input_bytes = (input_size.x * input_size.y * F32_SIZE) as u64;
-    builder.add_empty_rw_storage(&input_name, input_bytes);
+    let pixel_count = (input_size.x * input_size.y) as u64;
+    // builder.add_rw_storage(&input_name, &[0f32; pixel_count]);
+    // builder.add_staging(&input_name, &vec![0f32; pixel_count]);
+    builder.add_empty_staging(&input_name, pixel_count * 4);
 
     for i in 1..=iterations {
       let input_name = if i == 1 {
@@ -178,6 +180,30 @@ impl Choreographer {
     );
   }
 
+  fn build_dotpainter(
+    builder: &mut AppComputeWorkerBuilder<'_, Self>,
+    radius: u32,
+    input_size: UVec2,
+    param: &StaticParam,
+  ) {
+    let pixel_count = (input_size.x * input_size.y) as usize;
+    builder.add_staging("painted_dots", &vec![0f32; pixel_count]);
+    builder.add_storage("dotpainter_radius", &radius);
+
+    let circle_count = param.circle_positions_pos().count();
+    builder.add_pass::<shaders::DotpainterShader>(
+      [circle_count as u32 / WG_SIZE, 1, 1],
+      &[
+        "dotpainter_radius",
+        // provided by choreographer
+        "input_size",
+        // provided by choreographer
+        "dots_locations",
+        "dots_input",
+      ],
+    );
+  }
+
   fn build_choreographer(
     builder: &mut AppComputeWorkerBuilder<'_, Self>,
     input_size: UVec2,
@@ -221,6 +247,8 @@ impl ComputeWorker for Choreographer {
 
     let mut builder = AppComputeWorkerBuilder::new(world);
 
+    Self::build_dotpainter(&mut builder, 3, input_size, &static_param);
+
     Self::build_downscaler(&mut builder, "camera", 5, input_size);
     Self::build_gradiator(&mut builder, "camera", 5, input_size);
 
@@ -240,6 +268,7 @@ fn process_input_system(
   time: Res<Time>,
   mut inputs: EventReader<ChoreographerInput>,
   images: Res<Assets<Image>>,
+  static_param: Res<StaticParam>,
   mut worker: ResMut<AppComputeWorker<Choreographer>>,
 ) {
   let Some(input) = inputs.iter().last() else {
@@ -254,7 +283,10 @@ fn process_input_system(
     return;
   }
 
+  let pixel_count = (static_param.width() * static_param.height()) as usize;
+
   worker.write("dt", &time.delta_seconds());
+  worker.write_slice("dots_input", &vec![0f32; pixel_count]);
   worker.write_slice("camera_input", &camera_feed.data);
 }
 

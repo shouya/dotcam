@@ -110,15 +110,23 @@ fn setup_choreographer_tapouts(
   Choreographer::tap(
     &mut commands,
     &mut images,
-    "downscaler_camera_2_output",
-    (128, 128),
+    "gradiator_camera_output",
+    (512, 512),
+    rgf32,
+  );
+
+  Choreographer::tap(
+    &mut commands,
+    &mut images,
+    "dots_input",
+    (512, 512),
     rf32,
   );
 
   Choreographer::tap(
     &mut commands,
     &mut images,
-    "gradiator_camera_output",
+    "gradiator_dots_output",
     (512, 512),
     rgf32,
   );

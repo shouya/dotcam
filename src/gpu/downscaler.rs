@@ -25,6 +25,7 @@ use bevy::{
   },
   utils::HashMap,
 };
+
 use bevy_egui::{EguiContext, EguiUserTextures};
 use bevy_inspector_egui::egui;
 

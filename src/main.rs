@@ -11,6 +11,7 @@ use bevy::{
   window::{Window, WindowPlugin},
 };
 use bevy_egui::EguiPlugin;
+#[cfg(feature = "inspector")]
 use bevy_inspector_egui::{
   prelude::ReflectInspectorOptions, quick::ResourceInspectorPlugin,
   InspectorOptions,

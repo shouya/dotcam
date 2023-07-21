@@ -50,7 +50,7 @@ fn main(
 
   let gradient1 = camera_gradient[i];
   let gradient2 = dot_gradient[i];
-  let gradient: vec2f = gradient1;
+  let gradient: vec2f = -(gradient1 + gradient2);
 
   var new_velocity: vec2f = vel + dt * gradient * 1000.0;
   new_velocity = new_velocity * friction;
