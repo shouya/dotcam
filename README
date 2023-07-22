@@ -1,3 +1,17 @@
-A clumsy imitation of the DotCamera demo for SwissGL [1]. Mainly as an execuse for me to play with Bevy write some shader code.
+A clumsy imitation of the DotCamera demo for SwissGL [1]. Mainly as an execuse for me to play with:
+
+- Latest Bevy version
+  + bevy-inspector-egui (https://github.com/jakobhellermann/bevy-inspector-egui/)
+- Compute shader
+  + rendering pipeline
+  + WGSL
+  + bevy_app_compute (https://github.com/Kjolnyr/bevy_app_compute)
+- Rust's portable simd (https://doc.rust-lang.org/std/simd/struct.Simd.html)
+
+This repo offers several feature toggles:
+
+- cpu: all computation performed on cpu
+- gpu: enable compute shaders
+- simd: some image processing was done with simd
 
 [1]: https://google.github.io/swissgl
