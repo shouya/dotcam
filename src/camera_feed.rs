@@ -9,8 +9,12 @@ use bevy::{
 #[cfg(feature = "inspector")]
 use bevy_egui::EguiContexts;
 use crossbeam::channel::{self, Receiver};
-use image::{codecs::jpeg::JpegDecoder, DynamicImage, ImageDecoder};
-use nokhwa::{pixel_format::LumaFormat, CallbackCamera, Camera};
+use image::{DynamicImage, Luma};
+use nokhwa::{
+  pixel_format::LumaFormat,
+  utils::{frame_formats, CameraFormat, CameraIndex, FrameFormat, Resolution},
+  CallbackCamera, Camera, FormatDecoder, NokhwaError,
+};
 
 use crate::StaticParam;
 
@@ -54,16 +58,57 @@ struct CameraDev {
 #[derive(Resource, Clone)]
 pub struct CameraStream(pub Handle<Image>);
 
+fn pick_camera_format(
+  index: CameraIndex,
+  target_size: (u32, u32),
+) -> Option<CameraFormat> {
+  use nokhwa::utils::{RequestedFormat, RequestedFormatType};
+
+  let all_formats = {
+    let initial_req_format =
+      RequestedFormat::new::<LumaFormat>(RequestedFormatType::None);
+    let mut camera = Camera::new(index, initial_req_format).ok()?;
+    camera.compatible_camera_formats().ok()?
+  };
+
+  all_formats.into_iter().max_by_key(|format| {
+    // best format is one that's faster to decode
+    let format_score = match format.format() {
+      FrameFormat::GRAY => 2,
+      FrameFormat::YUYV => 1,
+      _ => 0,
+    };
+
+    // best resolution is matching resolution
+    let resolution_score = {
+      let [w, h] = [format.resolution().width(), format.resolution().height()];
+      let w_score = (target_size.0 as i32 - w as i32).abs();
+      let h_score = (target_size.1 as i32 - h as i32).abs();
+      -(w_score + h_score)
+    };
+
+    // best frame rate is highest frame rate
+    let frame_rate_score = format.frame_rate();
+
+    (format_score, resolution_score, frame_rate_score)
+  })
+}
+
 impl FromWorld for CameraDev {
   fn from_world(world: &mut World) -> Self {
-    use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
+    use nokhwa::utils::{RequestedFormat, RequestedFormatType};
     let param = world.get_resource::<StaticParam>().unwrap();
     let index = CameraIndex::Index(0);
-    let requested = RequestedFormat::new::<LumaFormat>(
-      RequestedFormatType::AbsoluteHighestResolution,
-    );
 
-    let camera = Camera::new(index, requested).unwrap();
+    let format = pick_camera_format(
+      index.clone(),
+      (param.width() as u32, param.height() as u32),
+    )
+    .unwrap();
+    let req_format = RequestedFormat::new::<FastLumaDecoder>(
+      RequestedFormatType::Exact(format),
+    );
+    let camera = Camera::new(index, req_format).unwrap();
 
     let (sender, receiver) = channel::bounded(1);
 
@@ -135,14 +180,8 @@ fn camera_buffer_to_image(
   buffer: nokhwa::Buffer,
   size: [u32; 2],
 ) -> DynamicImage {
-  use nokhwa::utils::FrameFormat::MJPEG;
-
-  assert!(buffer.source_frame_format() == MJPEG);
-
-  let decoder = JpegDecoder::new(buffer.buffer()).unwrap();
-  debug_assert!(decoder.color_type() == image::ColorType::Rgb8);
-
-  let image: DynamicImage = buffer.decode_image::<LumaFormat>().unwrap().into();
+  let image: DynamicImage =
+    buffer.decode_image::<FastLumaDecoder>().unwrap().into();
 
   let dim = image.height().min(image.width());
   let image = image
@@ -167,4 +206,46 @@ fn stop_webcam(mut _webcam: ResMut<CameraDev>) {
   //
   // this hack is simply exit the program.
   std::process::exit(0);
+}
+
+#[derive(Clone, Copy)]
+struct FastLumaDecoder;
+
+impl FormatDecoder for FastLumaDecoder {
+  type Output = Luma<u8>;
+
+  const FORMATS: &'static [FrameFormat] = frame_formats();
+
+  fn write_output(
+    fcc: FrameFormat,
+    resolution: Resolution,
+    data: &[u8],
+  ) -> Result<Vec<u8>, NokhwaError> {
+    match fcc {
+      FrameFormat::YUYV => {
+        Ok(data.chunks_exact(2).map(|s| s[0]).collect::<Vec<u8>>())
+      }
+      _ => LumaFormat::write_output(fcc, resolution, data),
+    }
+  }
+
+  fn write_output_buffer(
+    fcc: FrameFormat,
+    _resolution: Resolution,
+    data: &[u8],
+    dest: &mut [u8],
+  ) -> Result<(), NokhwaError> {
+    match fcc {
+      FrameFormat::YUYV => {
+        data
+          .chunks_exact(2)
+          .zip(dest.iter_mut())
+          .for_each(|(s, d)| {
+            *d = s[0];
+          });
+        Ok(())
+      }
+      _ => LumaFormat::write_output_buffer(fcc, _resolution, data, dest),
+    }
+  }
 }
