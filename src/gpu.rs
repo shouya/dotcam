@@ -206,10 +206,38 @@ fn send_choreographer_input(
 }
 
 // return bytes
+#[cfg(not(feature = "simd"))]
 pub fn vec_u8_to_vec_f32norm(src: &[u8]) -> Vec<u8> {
-  src
-    .iter()
-    .map(|&byte| byte as f32 / 255.0)
-    .flat_map(|f| f.to_ne_bytes())
-    .collect()
+  let mut out = Vec::with_capacity(src.len() * 4);
+
+  for i in src.iter() {
+    out.extend_from_slice(&(*i as f32 / 255.0).to_ne_bytes());
+  }
+  out
+}
+
+#[cfg(feature = "simd")]
+pub fn vec_u8_to_vec_f32norm(src: &[u8]) -> Vec<u8> {
+  use std::simd::{Simd, SimdFloat, SimdUint};
+  use safe_transmute::transmute_to_bytes;
+
+  let mut out = Vec::with_capacity(src.len() * 4);
+
+  let divisors_simd: Simd<f32, 8> = Simd::splat(255.0).recip();
+
+  let mut i = 0;
+  while i < src.len() {
+    let bytes_simd: Simd<u8, 8> = Simd::from_slice(&src[i..i + 8]);
+    let values_simd: Simd<f32, 8> = bytes_simd.cast::<f32>() * divisors_simd;
+    let bytes = transmute_to_bytes(values_simd.as_array());
+    out.extend_from_slice(bytes);
+    i += 8;
+  }
+
+  // just in case the length of src is not a multiple of 8
+  if i < src.len() {
+    out.extend_from_slice(&vec_u8_to_vec_f32norm(&src[i..]));
+  }
+
+  out
 }
