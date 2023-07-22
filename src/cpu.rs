@@ -26,9 +26,9 @@ pub struct DotCamPlugin;
 impl Plugin for DotCamPlugin {
   fn build(&self, app: &mut App) {
     app
-      .init_resource::<TrackedCircles>()
+      .init_resource::<TrackedDots>()
       .init_resource::<ForceField>()
-      .add_startup_system(setup_circle_bundle.pipe(spawn_circles))
+      .add_startup_system(setup_dot_bundle.pipe(spawn_dots))
       .add_system(
         update_image_gradient.run_if(resource_changed::<CameraStream>()),
       )
@@ -44,8 +44,8 @@ impl Plugin for DotCamPlugin {
 }
 
 #[derive(Default, Resource, Clone)]
-struct TrackedCircles {
-  circles: Vec<Entity>,
+struct TrackedDots {
+  dots: Vec<Entity>,
 }
 
 #[derive(Component, Clone, Copy, Default)]
@@ -69,28 +69,28 @@ impl FromWorld for ForceField {
 }
 
 #[derive(Default, Resource, Bundle, Clone)]
-struct CircleBundle {
+struct DotBundle {
   #[bundle]
   mesh: MaterialMesh2dBundle<ColorMaterial>,
   velocity: Velocity,
   force: Force,
 }
 
-fn setup_circle_bundle(
+fn setup_dot_bundle(
   mut commands: Commands,
   mut meshes: ResMut<Assets<Mesh>>,
   mut materials: ResMut<Assets<ColorMaterial>>,
   dimension_info: Res<StaticParam>,
-) -> CircleBundle {
+) -> DotBundle {
   let mesh_handle = meshes
     .add(Mesh::from(shape::Circle {
-      radius: dimension_info.circle_radius,
+      radius: dimension_info.dot_radius,
       ..default()
     }))
     .into();
 
   let material_handle = materials.add(Color::rgb(0.0, 0.0, 0.0).into());
-  let bundle = CircleBundle {
+  let bundle = DotBundle {
     mesh: MaterialMesh2dBundle {
       mesh: mesh_handle,
       material: material_handle,
@@ -104,19 +104,19 @@ fn setup_circle_bundle(
   bundle
 }
 
-fn spawn_circles(
-  In(circle_bundle): In<CircleBundle>,
+fn spawn_dots(
+  In(dot_bundle): In<DotBundle>,
   dimension_info: Res<StaticParam>,
-  mut tracked_circles: ResMut<TrackedCircles>,
+  mut tracked_dots: ResMut<TrackedDots>,
   mut commands: Commands,
 ) {
-  for pos in dimension_info.circle_positions() {
+  for pos in dimension_info.dot_positions() {
     let entity = commands
-      .spawn(circle_bundle.clone())
+      .spawn(dot_bundle.clone())
       .insert(Transform::from_translation(pos.extend(0.0)))
       .id();
 
-    tracked_circles.circles.push(entity);
+    tracked_dots.dots.push(entity);
   }
 }
 
@@ -152,19 +152,19 @@ fn update_repel_gradient(
   dynamic_param: Res<DynamicParam>,
   mut field: ResMut<ForceField>,
   q: Query<&Transform>,
-  all_circles: Res<TrackedCircles>,
+  all_dots: Res<TrackedDots>,
 ) {
   let mut canvas =
     new_scalar_field(static_param.width() as u32, static_param.height() as u32);
 
-  q.iter_many(&all_circles.circles).for_each(|t| {
+  q.iter_many(&all_dots.dots).for_each(|t| {
     let [x, y] = static_param.translation_to_pixel(&t.translation);
     canvas[(x, y)].0[0] += 0.5;
   });
 
   let gradient = accurate_gradient(&canvas, 5);
 
-  for trans in q.iter_many(&all_circles.circles) {
+  for trans in q.iter_many(&all_dots.dots) {
     let [x, y] = static_param.translation_to_pixel(&trans.translation);
 
     let grad_at_point = gradient.get_pixel(x, y).0;

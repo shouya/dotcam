@@ -20,10 +20,10 @@ fn main(
 ) {
   let index = invocation_id.x;
   let loc = dot_locations[index];
-  draw_circle(vec2i(loc));
+  draw_dot(vec2i(loc));
 }
 
-fn draw_circle(loc: vec2i) {
+fn draw_dot(loc: vec2i) {
   let r = i32(radius);
   for (var i = -r; i <= r; i+=1) {
     for(var j = -r; j <= r; j+=1) {

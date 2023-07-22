@@ -193,9 +193,9 @@ impl Choreographer {
     builder.add_staging("painted_dots", &vec![0f32; pixel_count]);
     builder.add_storage("dotpainter_radius", &radius);
 
-    let circle_count = param.circle_positions_pos().count();
+    let dot_count = param.dot_positions_pos().count();
     builder.add_pass::<shaders::DotpainterShader>(
-      [circle_count as u32 / WG_SIZE, 1, 1],
+      [dot_count as u32 / WG_SIZE, 1, 1],
       &[
         "dotpainter_radius",
         // provided by choreographer
@@ -215,17 +215,17 @@ impl Choreographer {
     builder.add_storage("dt", &0.01667f32);
     builder.add_storage("input_size", &input_size);
 
-    let locations: Vec<Vec2> = param.circle_positions_pos().collect();
+    let locations: Vec<Vec2> = param.dot_positions_pos().collect();
     builder.add_staging("dots_locations", &locations);
 
-    let circle_count = locations.len();
-    builder.add_staging("dots_velocities", &vec![Vec2::ZERO; circle_count]);
+    let dot_count = locations.len();
+    builder.add_staging("dots_velocities", &vec![Vec2::ZERO; dot_count]);
 
-    builder.add_staging("dots_new_locations", &vec![Vec2::ZERO; circle_count]);
-    builder.add_staging("dots_new_velocities", &vec![Vec2::ZERO; circle_count]);
+    builder.add_staging("dots_new_locations", &vec![Vec2::ZERO; dot_count]);
+    builder.add_staging("dots_new_velocities", &vec![Vec2::ZERO; dot_count]);
 
     builder.add_pass::<shaders::ChoreographerShader>(
-      [circle_count as u32 / WG_SIZE, 1, 1],
+      [dot_count as u32 / WG_SIZE, 1, 1],
       &[
         "dt",
         "input_size",

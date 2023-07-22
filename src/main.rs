@@ -42,8 +42,8 @@ struct Grid<T> {
 #[derive(Resource, Clone)]
 struct StaticParam {
   pub size: (f32, f32),
-  pub circle_grid: (usize, usize),
-  pub circle_radius: f32,
+  pub dot_grid: (usize, usize),
+  pub dot_radius: f32,
 }
 
 #[derive(Resource, Reflect)]
@@ -124,8 +124,8 @@ impl Default for StaticParam {
   fn default() -> Self {
     Self {
       size: (512.0, 512.0),
-      circle_grid: (100, 100),
-      circle_radius: 2.0,
+      dot_grid: (100, 100),
+      dot_radius: 2.0,
     }
   }
 }
@@ -144,8 +144,8 @@ impl StaticParam {
     bevy::window::WindowResolution::new(w, h)
   }
 
-  fn circle_positions(&self) -> impl Iterator<Item = Vec2> {
-    let (grid_w, grid_h) = self.circle_grid;
+  fn dot_positions(&self) -> impl Iterator<Item = Vec2> {
+    let (grid_w, grid_h) = self.dot_grid;
     let [x0, x1, y0, y1] = self.boundary();
 
     let x_step = (x1 - x0) / (grid_w as f32);
@@ -163,9 +163,9 @@ impl StaticParam {
     })
   }
 
-  fn circle_positions_pos(&self) -> impl Iterator<Item = Vec2> {
+  fn dot_positions_pos(&self) -> impl Iterator<Item = Vec2> {
     let offset = Vec2::new(self.width() / 2.0, self.height() / 2.0);
-    self.circle_positions().map(move |pos| pos + offset)
+    self.dot_positions().map(move |pos| pos + offset)
   }
 
   fn boundary(&self) -> [f32; 4] {

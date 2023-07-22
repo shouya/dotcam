@@ -73,14 +73,14 @@ fn spawn_dots(
   let mut dot_entities = Vec::new();
   let mesh: Mesh2dHandle = meshes
     .add(Mesh::from(shape::Circle {
-      radius: param.circle_radius,
+      radius: param.dot_radius,
       ..default()
     }))
     .into();
 
   let material = materials.add(Color::rgb(0.0, 0.0, 0.0).into());
 
-  for _ in param.circle_positions() {
+  for _ in param.dot_positions() {
     let entity = commands
       .spawn(MaterialMesh2dBundle {
         mesh: mesh.clone(),
