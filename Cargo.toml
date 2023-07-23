@@ -25,7 +25,7 @@ safe-transmute = "0.11.2"
 
 [features]
 simd = []
-default = ["simd", "gpu", "inspector"]
+default = ["simd", "gpu"]
 cpu = []
 gpu = []
 inspector = ["dep:bevy-inspector-egui", "dep:bevy_egui"]
