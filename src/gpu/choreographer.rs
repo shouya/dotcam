@@ -111,10 +111,12 @@ impl Choreographer {
     mut input_size: UVec2,
   ) {
     let input_name = format!("{}_input", prefix);
-    let pixel_count = (input_size.x * input_size.y) as u64;
-    // builder.add_rw_storage(&input_name, &[0f32; pixel_count]);
-    // builder.add_staging(&input_name, &vec![0f32; pixel_count]);
-    builder.add_empty_staging(&input_name, pixel_count * 4);
+    let pixel_count = (input_size.x * input_size.y) as usize;
+
+    #[cfg(feature = "inspector")]
+    builder.add_staging(&input_name, &vec![0f32; pixel_count]);
+    #[cfg(not(feature = "inspector"))]
+    builder.add_rw_storage(&input_name, &vec![0f32; pixel_count]);
 
     for i in 1..=iterations {
       let input_name = if i == 1 {
@@ -159,8 +161,10 @@ impl Choreographer {
 
     let output_name = format!("gradiator_{}_output", prefix);
     let output_bytes = (input_size.x * input_size.y * F32_SIZE * 2) as u64;
-    // builder.add_empty_rw_storage(&output_name, output_bytes);
+    #[cfg(feature = "inspector")]
     builder.add_empty_staging(&output_name, output_bytes);
+    #[cfg(not(feature = "inspector"))]
+    builder.add_empty_rw_storage(&output_name, output_bytes);
 
     let downscaler_input_name = format!("{}_input", prefix);
     let mut input_vars =
@@ -190,7 +194,12 @@ impl Choreographer {
     param: &StaticParam,
   ) {
     let pixel_count = (input_size.x * input_size.y) as usize;
+
+    #[cfg(feature = "inspector")]
     builder.add_staging("painted_dots", &vec![0f32; pixel_count]);
+    #[cfg(not(feature = "inspector"))]
+    builder.add_storage("painted_dots", &vec![0f32; pixel_count]);
+
     builder.add_storage("dotpainter_radius", &radius);
 
     let dot_count = param.dot_positions_pos().count();
@@ -216,11 +225,13 @@ impl Choreographer {
     builder.add_storage("input_size", &input_size);
 
     let locations: Vec<Vec2> = param.dot_positions_pos().collect();
+
+    // must be staging instead of storage so the value can be read out
     builder.add_staging("dots_locations", &locations);
 
     let dot_count = locations.len();
+    // must be staging instead of storage so the value can be swapped
     builder.add_staging("dots_velocities", &vec![Vec2::ZERO; dot_count]);
-
     builder.add_staging("dots_new_locations", &vec![Vec2::ZERO; dot_count]);
     builder.add_staging("dots_new_velocities", &vec![Vec2::ZERO; dot_count]);
 
